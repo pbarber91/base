@@ -70,14 +70,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .maybeSingle();
 
       if (error) {
-        // If RLS/table isn’t ready yet, don’t brick the app.
+        // If RLS/table isn't ready yet, don't brick the app.
+        console.warn("Profile fetch error:", error);
         setProfile({ id: u.id, email: u.email ?? null });
         return;
       }
 
-      if (data) setProfile(data as ProfileLike);
-      else setProfile({ id: u.id, email: u.email ?? null });
-    } catch {
+      if (data) {
+        console.log("Profile loaded:", data);
+        setProfile(data as ProfileLike);
+      } else {
+        setProfile({ id: u.id, email: u.email ?? null });
+      }
+    } catch (err) {
+      console.error("Profile fetch exception:", err);
       setProfile({ id: u.id, email: u.email ?? null });
     }
   };
@@ -142,9 +148,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
-    // Make sign-out “reliable”:
+    // Make sign-out "reliable":
     // 1) always clear UI state even if supabase call hangs/errors
-    // 2) also remove local storage keys so refresh won’t resurrect a session
+    // 2) also remove local storage keys so refresh won't resurrect a session
     setLoading(true);
 
     const hardClear = () => {
