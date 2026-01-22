@@ -57,12 +57,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchProfile = async (u: User | null) => {
     console.log("fetchProfile called with user:", u?.email);
-    
+
     if (!u) {
       console.log("No user, setting profile to null");
       setProfile(null);
       return;
     }
+
+    // Start with basic profile from user object
+    let profile: ProfileLike = { id: u.id, email: u.email ?? null };
 
     // Try to load profile from `profiles` table. If it doesn't exist, fail gracefully.
     try {
@@ -78,21 +81,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error) {
         // If RLS/table isn't ready yet, don't brick the app.
         console.warn("Profile fetch error (RLS or table issue):", error.message);
-        setProfile({ id: u.id, email: u.email ?? null });
-        return;
-      }
-
-      if (data) {
+        // Fall through to use basic profile
+      } else if (data) {
         console.log("Profile loaded successfully:", data);
-        setProfile(data as ProfileLike);
+        profile = data as ProfileLike;
       } else {
-        console.log("No profile data found, using basic profile");
-        setProfile({ id: u.id, email: u.email ?? null });
+        console.log("No profile data found in database");
+        // Check if admin role is in user's app_metadata
+        if (u.user_metadata?.role === "admin" || u.user_metadata?.is_admin === true) {
+          console.log("Found admin status in user metadata");
+          profile.role = u.user_metadata.role;
+          profile.is_admin = u.user_metadata.is_admin;
+        }
       }
     } catch (err) {
       console.error("Profile fetch exception:", err);
-      setProfile({ id: u.id, email: u.email ?? null });
+      // Use basic profile on exception
     }
+
+    setProfile(profile);
   };
 
   const refreshProfile = async () => {
