@@ -110,6 +110,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     console.log("AuthProvider effect: initializing");
     mountedRef.current = true;
 
+    // Initialize immediately
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
@@ -122,17 +123,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(sess);
         setUser(sess?.user ?? null);
         await fetchProfile(sess?.user ?? null);
+      } catch (err) {
+        console.error("Session check error:", err);
       } finally {
         if (mountedRef.current) {
-          console.log("Setting loading to false");
+          console.log("Initial load complete, setting loading to false");
           setLoading(false);
         }
       }
     })();
 
+    // Listen for auth changes
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
-      console.log("Auth state changed:", _event);
-      // This is the reliable way to keep UI in sync on sign-in/sign-out.
+      console.log("Auth state changed:", _event, "User:", sess?.user?.email);
+      if (!mountedRef.current) return;
+
       setSession(sess ?? null);
       setUser(sess?.user ?? null);
       await fetchProfile(sess?.user ?? null);
@@ -141,7 +146,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mountedRef.current = false;
-      sub.subscription.unsubscribe();
+      sub?.subscription?.unsubscribe?.();
     };
   }, []);
 
