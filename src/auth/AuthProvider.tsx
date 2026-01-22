@@ -109,6 +109,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     console.log("AuthProvider effect: initializing");
     mountedRef.current = true;
+    let timeoutId: ReturnType<typeof setTimeout>;
 
     // Initialize immediately
     (async () => {
@@ -125,13 +126,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await fetchProfile(sess?.user ?? null);
       } catch (err) {
         console.error("Session check error:", err);
-      } finally {
-        if (mountedRef.current) {
-          console.log("Initial load complete, setting loading to false");
-          setLoading(false);
-        }
+      }
+
+      // Always set loading to false after initial check
+      if (mountedRef.current) {
+        console.log("Initial load complete, setting loading to false");
+        setLoading(false);
       }
     })();
+
+    // Safety timeout - ensure loading is set to false after 5 seconds max
+    timeoutId = setTimeout(() => {
+      if (mountedRef.current) {
+        console.log("Loading timeout reached, forcing loading to false");
+        setLoading(false);
+      }
+    }, 5000);
 
     // Listen for auth changes
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
@@ -146,6 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mountedRef.current = false;
+      clearTimeout(timeoutId);
       sub?.subscription?.unsubscribe?.();
     };
   }, []);
