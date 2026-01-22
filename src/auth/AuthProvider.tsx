@@ -109,7 +109,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     console.log("AuthProvider effect: initializing");
     mountedRef.current = true;
-    let timeoutId: ReturnType<typeof setTimeout>;
 
     // Initialize immediately
     (async () => {
@@ -123,25 +122,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         setSession(sess);
         setUser(sess?.user ?? null);
-        await fetchProfile(sess?.user ?? null);
+
+        // Set loading to false immediately - profile can load in background
+        setLoading(false);
+
+        // Fetch profile asynchronously without blocking UI
+        fetchProfile(sess?.user ?? null);
       } catch (err) {
         console.error("Session check error:", err);
-      }
-
-      // Always set loading to false after initial check
-      if (mountedRef.current) {
-        console.log("Initial load complete, setting loading to false");
-        setLoading(false);
+        if (mountedRef.current) setLoading(false);
       }
     })();
-
-    // Safety timeout - ensure loading is set to false after 5 seconds max
-    timeoutId = setTimeout(() => {
-      if (mountedRef.current) {
-        console.log("Loading timeout reached, forcing loading to false");
-        setLoading(false);
-      }
-    }, 5000);
 
     // Listen for auth changes
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
@@ -150,13 +141,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setSession(sess ?? null);
       setUser(sess?.user ?? null);
-      await fetchProfile(sess?.user ?? null);
       setLoading(false);
+
+      // Fetch profile asynchronously
+      fetchProfile(sess?.user ?? null);
     });
 
     return () => {
       mountedRef.current = false;
-      clearTimeout(timeoutId);
       sub?.subscription?.unsubscribe?.();
     };
   }, []);
