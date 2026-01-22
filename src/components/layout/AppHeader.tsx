@@ -63,19 +63,24 @@ export default function AppHeader() {
           setBusy(false);
           return;
         }
+        console.log("Signing in with password...");
         await signInWithPassword({ email: eaddr, password });
+        console.log("Sign in successful, closing modal");
         setAuthOpen(false);
+        setBusy(false);
 
         // If your app already handles post-auth redirects elsewhere, this is harmless.
         // If not, it helps you land back where you were.
         navigate(returnTo, { replace: true });
       } else {
+        console.log("Sending magic link...");
         await signInWithMagicLink({ email: eaddr });
         setMsg("Magic link sent. Check your email.");
+        setBusy(false);
       }
     } catch (err: any) {
+      console.error("Sign in error:", err);
       setMsg(err?.message ?? "Something went wrong.");
-    } finally {
       setBusy(false);
     }
   };
