@@ -156,15 +156,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log("No user, isAdmin = false");
       return false;
     }
+
+    // Check profile is_admin flag
     if (profile?.is_admin === true) {
-      console.log("is_admin flag is true");
+      console.log("✓ is_admin flag is true");
       return true;
     }
+
+    // Check profile role
     if (typeof profile?.role === "string" && profile.role.toLowerCase() === "admin") {
-      console.log("role is admin");
+      console.log("✓ role is admin:", profile.role);
       return true;
     }
-    console.log("Not admin. is_admin:", profile?.is_admin, "role:", profile?.role);
+
+    // Check user metadata
+    if (user.user_metadata?.role === "admin" || user.user_metadata?.is_admin === true) {
+      console.log("✓ Found admin in user metadata");
+      return true;
+    }
+
+    // Check user app_metadata
+    if (user.app_metadata?.role === "admin" || user.app_metadata?.is_admin === true) {
+      console.log("✓ Found admin in app_metadata");
+      return true;
+    }
+
+    console.log("✗ Not admin. profile:", { is_admin: profile?.is_admin, role: profile?.role }, "user_metadata:", user.user_metadata);
     return false;
   }, [user, profile]);
 
