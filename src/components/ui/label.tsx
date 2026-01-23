@@ -1,3 +1,4 @@
+// src/components/ui/label.tsx
 import * as React from "react";
 import * as LabelPrimitive from "@radix-ui/react-label";
 import { cva } from "class-variance-authority";
@@ -5,7 +6,9 @@ import { cva } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const labelVariants = cva(
-  "text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+  // ✅ Force readable label color on light surfaces even if a parent has `text-white`
+  // Uses your shadcn tokens, so it stays consistent with theme.
+  "text-sm font-medium leading-none text-foreground peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
 );
 
 const Label = React.forwardRef<

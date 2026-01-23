@@ -1,7 +1,15 @@
-// AppHeader.tsx
+// src/components/layout/AppHeader.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/auth/AuthProvider";
+import UserAvatar from "@/components/shared/UserAvatar";
+
+// ✅ Minimal additions to reliably get Display Name:
+// Your header was only reading `useAuth().profile`, which (in your current project)
+// does not always include `display_name`. We fetch the Base44 UserProfile record
+// by email and use its `display_name` when present.
+import { base44 } from "@/api/base44Client";
+import { useQuery } from "@tanstack/react-query";
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -39,6 +47,32 @@ export default function AppHeader() {
   }, [authOpen]);
 
   const displayEmail = profile?.email ?? user?.email ?? "";
+
+  // ✅ Fetch Base44 profile by email (this is where your display_name actually lives)
+  const { data: base44Profile } = useQuery({
+    queryKey: ["header-profile", displayEmail],
+    queryFn: async () => {
+      const email = displayEmail?.trim();
+      if (!email) return null;
+      const res = await base44.entities.UserProfile.filter({ user_email: email }, null, 1);
+      return res?.[0] ?? null;
+    },
+    enabled: !!displayEmail,
+    staleTime: 30_000,
+  });
+
+  // IMPORTANT: Use display_name first, then full_name, and only fall back to email if nothing else exists.
+  const displayName =
+    base44Profile?.display_name?.trim() ||
+    profile?.display_name?.trim() ||
+    profile?.full_name?.trim() ||
+    (user as any)?.user_metadata?.full_name?.trim?.() ||
+    (user as any)?.user_metadata?.name?.trim?.() ||
+    (user as any)?.user_metadata?.display_name?.trim?.() ||
+    displayEmail ||
+    "Account";
+
+  const avatarUrl = base44Profile?.avatar_url ?? profile?.avatar_url ?? undefined;
 
   const openLogin = () => {
     // IMPORTANT: does NOT route to get-started.
@@ -159,7 +193,17 @@ export default function AppHeader() {
           <div className="flex items-center gap-3">
             {user ? (
               <div className="hidden sm:flex items-center gap-3">
-                <span className="text-sm text-slate-600 max-w-[220px] truncate">{displayEmail}</span>
+                {/* Profile pill (avatar + display name) */}
+                <Link
+                  to="/profile"
+                  onClick={() => setMobileOpen(false)}
+                  className={cx("flex items-center gap-2 rounded-xl px-2 py-1.5 transition-all", "hover:bg-slate-50")}
+                  title="Go to profile"
+                >
+                  <UserAvatar name={displayName} imageUrl={avatarUrl} size="sm" />
+                  <span className="text-sm text-slate-700 font-medium max-w-[220px] truncate">{displayName}</span>
+                </Link>
+
                 <button
                   onClick={doSignOut}
                   disabled={signingOut || loading}
@@ -206,6 +250,20 @@ export default function AppHeader() {
         {mobileOpen && (
           <div className="lg:hidden pb-4">
             <nav className="flex flex-col gap-1 pt-2">
+              {user && (
+                <Link
+                  to="/profile"
+                  onClick={() => setMobileOpen(false)}
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-800 hover:bg-slate-50"
+                >
+                  <UserAvatar name={displayName} imageUrl={avatarUrl} size="sm" />
+                  <div className="min-w-0">
+                    <div className="truncate">{displayName}</div>
+                    {displayEmail && <div className="text-xs text-slate-500 truncate">{displayEmail}</div>}
+                  </div>
+                </Link>
+              )}
+
               {navLinks.map((l) => (
                 <Link
                   key={l.to}
@@ -278,7 +336,9 @@ export default function AppHeader() {
                 onClick={() => setMode("password")}
                 className={cx(
                   "flex-1 h-9 rounded-lg text-sm font-medium border",
-                  mode === "password" ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-white border-slate-200 text-slate-700"
+                  mode === "password"
+                    ? "bg-amber-50 border-amber-200 text-amber-800"
+                    : "bg-white border-slate-200 text-slate-700"
                 )}
                 disabled={busy}
               >
@@ -289,7 +349,9 @@ export default function AppHeader() {
                 onClick={() => setMode("magic")}
                 className={cx(
                   "flex-1 h-9 rounded-lg text-sm font-medium border",
-                  mode === "magic" ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-white border-slate-200 text-slate-700"
+                  mode === "magic"
+                    ? "bg-amber-50 border-amber-200 text-amber-800"
+                    : "bg-white border-slate-200 text-slate-700"
                 )}
                 disabled={busy}
               >

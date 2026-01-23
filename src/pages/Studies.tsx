@@ -68,7 +68,7 @@ export default function Studies() {
                   to help you understand and apply God's Word.
                 </p>
               </div>
-              <Link to="/StartStudy">
+              <Link to="/Start-Study">
                 <Button className="bg-white text-amber-600 hover:bg-amber-50 mt-2 sm:mt-0">
                   <Plus className="h-5 w-5 mr-2" />
                   Start New Study
