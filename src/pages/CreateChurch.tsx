@@ -62,7 +62,8 @@ export default function CreateChurch() {
     mutationFn: async (data: any) => {
       const newChurch = await base44.entities.Church.create({
         ...data,
-        admin_emails: [user.email]
+        admin_emails: [user.email],
+        created_by: user.email,
       });
 
       const existingProfile = await base44.entities.UserProfile
