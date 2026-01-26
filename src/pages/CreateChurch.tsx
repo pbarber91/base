@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { base44 } from "@/api/base44Client";
+import { base44, supabase } from "@/api/base44Client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import GradientCard from "@/components/ui/GradientCard";
-import { Church, ChevronLeft, Loader2 } from "lucide-react";
+import { Church, ChevronLeft, Loader2, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 
@@ -16,58 +16,73 @@ type Me = {
   full_name?: string | null;
 };
 
+function extFromFile(file: File) {
+  const parts = file.name.split(".");
+  const ext = parts.length > 1 ? parts[parts.length - 1].toLowerCase() : "bin";
+  return ext.replace(/[^a-z0-9]/g, "") || "bin";
+}
+
+async function uploadPublicMedia(path: string, file: File) {
+  const { error } = await supabase.storage
+    .from("public-media")
+    .upload(path, file, { upsert: true, contentType: file.type });
+
+  if (error) throw error;
+
+  const { data } = supabase.storage.from("public-media").getPublicUrl(path);
+  return data.publicUrl;
+}
+
 export default function CreateChurch() {
   const [user, setUser] = useState<Me | null>(null);
   const queryClient = useQueryClient();
 
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+
   useEffect(() => {
-    base44.auth
-      .me()
-      .then(setUser)
-      .catch(() => {
-        window.location.href = "/";
-      });
+    base44.auth.me().then(setUser).catch(() => (window.location.href = "/"));
   }, []);
 
   const createMutation = useMutation({
-    mutationFn: async (data: any) => {
+    mutationFn: async (form: any) => {
       if (!user?.id) throw new Error("Not authenticated");
 
-      // 1) Create church (must include created_by for RLS)
+      // 1) Create church first (get id)
       const newChurch = await base44.entities.Church.create({
-        name: data.name,
-        description: data.description || null,
-        location: data.location || null,
-        website: data.website || null,
-        logo_url: data.logo_url || null,
-        cover_image_url: data.cover_image_url || null,
+        name: form.name,
+        description: form.description || null,
+        location: form.location || null,
+        website: form.website || null,
         created_by: user.id,
+        // we'll fill these after uploads
+        logo_url: null,
+        cover_image_url: null,
       });
 
-      // 2) Insert initial church admin membership (requires policy added above)
+      // 2) Upload images (optional) to public-media
+      const updates: any = {};
+      const ts = Date.now();
+
+      if (logoFile) {
+        const p = `public/churches/${newChurch.id}/logo_${ts}.${extFromFile(logoFile)}`;
+        updates.logo_url = await uploadPublicMedia(p, logoFile);
+      }
+      if (coverFile) {
+        const p = `public/churches/${newChurch.id}/cover_${ts}.${extFromFile(coverFile)}`;
+        updates.cover_image_url = await uploadPublicMedia(p, coverFile);
+      }
+
+      if (Object.keys(updates).length) {
+        await base44.entities.Church.update(newChurch.id, updates);
+      }
+
+      // 3) Ensure church admin membership exists for creator
       await base44.entities.ChurchMember.create({
         church_id: newChurch.id,
         user_id: user.id,
         role: "admin",
       });
-
-      // 3) Optional: ensure your profile has display_name/email set (matches your profiles table)
-      // profiles.id = auth.uid() based on your RLS policy, so update by user.id
-      try {
-        await base44.entities.UserProfile.update(user.id, {
-          email: user.email,
-          display_name: user.full_name || user.email,
-          role: "user",
-        });
-      } catch {
-        // If profile row doesn't exist yet, create it
-        await base44.entities.UserProfile.create({
-          id: user.id,
-          email: user.email,
-          display_name: user.full_name || user.email,
-          role: "user",
-        });
-      }
 
       return newChurch;
     },
@@ -84,15 +99,13 @@ export default function CreateChurch() {
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const formData = new FormData(e.currentTarget);
+    const fd = new FormData(e.currentTarget);
 
     createMutation.mutate({
-      name: formData.get("name"),
-      description: formData.get("description"),
-      location: formData.get("location"),
-      website: formData.get("website"),
-      logo_url: formData.get("logo_url"),
-      cover_image_url: formData.get("cover_image_url"),
+      name: fd.get("name"),
+      description: fd.get("description"),
+      location: fd.get("location"),
+      website: fd.get("website"),
     });
   };
 
@@ -121,7 +134,7 @@ export default function CreateChurch() {
             </div>
           </div>
           <h1 className="text-3xl font-serif font-bold mb-2">Create Your Church</h1>
-          <p className="text-violet-100">Set up your church's presence and start building community</p>
+          <p className="text-violet-100">Set up your church&apos;s presence and start building community</p>
         </div>
       </div>
 
@@ -135,11 +148,7 @@ export default function CreateChurch() {
 
             <div>
               <Label>Description</Label>
-              <Textarea
-                name="description"
-                placeholder="Tell people about your church..."
-                className="mt-1 min-h-[100px]"
-              />
+              <Textarea name="description" placeholder="Tell people about your church..." className="mt-1 min-h-[100px]" />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -153,28 +162,47 @@ export default function CreateChurch() {
               </div>
             </div>
 
-            <div>
-              <Label>Logo URL (optional)</Label>
-              <Input name="logo_url" placeholder="https://..." className="mt-1" />
-            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Logo (optional)</Label>
+                <div className="mt-1 flex items-center gap-3">
+                  <Input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)}
+                  />
+                </div>
+                {logoFile && <p className="text-xs text-slate-600 mt-1">Selected: {logoFile.name}</p>}
+              </div>
 
-            <div>
-              <Label>Cover Image URL (optional)</Label>
-              <Input name="cover_image_url" placeholder="https://..." className="mt-1" />
+              <div>
+                <Label>Cover Image (optional)</Label>
+                <div className="mt-1 flex items-center gap-3">
+                  <Input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setCoverFile(e.target.files?.[0] ?? null)}
+                  />
+                </div>
+                {coverFile && <p className="text-xs text-slate-600 mt-1">Selected: {coverFile.name}</p>}
+              </div>
             </div>
 
             <div className="flex justify-end gap-3 pt-4">
               <Link to={createPageUrl("Home")}>
-                <Button type="button" variant="outline">
-                  Cancel
-                </Button>
+                <Button type="button" variant="outline">Cancel</Button>
               </Link>
+
               <Button
                 type="submit"
                 disabled={createMutation.isPending}
                 className="bg-violet-600 hover:bg-violet-700 gap-2"
               >
-                {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                {createMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="h-4 w-4" />
+                )}
                 Create Church
               </Button>
             </div>
