@@ -54,8 +54,7 @@ export default function HeroSection({ user }) {
               </Button>
             </Link>
             <Link to={createPageUrl("Courses")}>
-              <Button size="lg" variant="outline" className="inline-flex items-center justify-center whitespace-nowrap text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 shadow rounded-md bg-amber-500 hover:bg-amber-600 text-slate-900 font-semibold gap-2 h-12 px-8">
-                <Users className="h-5 w-5" />
+              <Button size="lg" className="bg-amber-500 hover:bg-amber-600 text-slate-900 font-semibold gap-2 h-12 px-8">
                 Browse Courses
               </Button>
             </Link>
@@ -63,26 +62,7 @@ export default function HeroSection({ user }) {
         </div>
         
         {/* Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.4 }}
-          className="mt-20 pt-10 border-t border-slate-700/50">
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-            {[
-            { label: "Scripture Studies", value: "50+" },
-            { label: "Church Courses", value: "100+" },
-            { label: "Active Learners", value: "5,000+" },
-            { label: "Study Groups", value: "200+" }].
-            map((stat, i) =>
-            <div key={i} className="text-center">
-                <div className="text-3xl font-bold text-amber-400 mb-1">{stat.value}</div>
-                <div className="text-sm text-slate-400">{stat.label}</div>
-              </div>
-            )}
-          </div>
-        </motion.div>
+     
       </div>
     </section>);
 
