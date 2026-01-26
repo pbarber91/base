@@ -6,15 +6,19 @@
     - base44.auth.redirectToLogin()
     - base44.entities.<Entity>.list()/filter()/create()/update()/delete()
 
-  IMPORTANT:
-  - Data is persisted in Supabase (so Vercel + localhost match).
-  - UserProfile has an optional localStorage cache for snappy UI.
+  Notes:
+  - Supabase tables are snake_case + plural (e.g. churches, profiles, groups, courses, studies).
+  - We keep Base44-style entity names (Church, UserProfile, etc.) but map them to real table names.
+  - We also keep backward-compatible field aliases used throughout the UI:
+      user_email <-> email
+      created_date <-> created_at
+      updated_date <-> updated_at
 */
 
 import { supabase } from "@/lib/supabaseClient";
 
 type ID = string;
-type SortSpec = string | null | undefined; // e.g. '-created_date' or 'order'
+type SortSpec = string | null | undefined;
 type Filter<T> = Partial<Record<keyof T, any>>;
 
 export type Base44User = {
@@ -60,25 +64,75 @@ function safeClearCache(key: string) {
   }
 }
 
-class SupabaseEntityApi<T extends Record<string, any>> {
-  constructor(
-    private tableName: string,
-    private options?: {
-      // When true, cache the most recent results under base44_port_<TableName>
-      cache?: boolean;
-      // If provided, only cache when filtering by this field (e.g. user_email)
-      cacheKeyField?: string;
+type EntityConfig = {
+  table: string;
+
+  // Columns we allow to pass through to Supabase for insert/update.
+  // Anything else is stripped so old UI fields don't break writes.
+  allowed?: string[];
+
+  // Field aliases for backwards compatibility (criteria + payload).
+  // Example: { user_email: "email" } means:
+  //  - filter({ user_email: ... }) becomes eq("email", ...)
+  //  - create({ user_email: ... }) writes { email: ... }
+  alias?: Record<string, string>;
+
+  // When true, cache the most recent results under base44_port_<EntityKey>
+  cache?: boolean;
+
+  // If provided, only cache when filtering by this field (after aliasing)
+  cacheKeyField?: string;
+};
+
+function applyAliases(obj: Record<string, any>, alias?: Record<string, string>) {
+  if (!alias) return obj;
+  const out: Record<string, any> = { ...obj };
+  for (const [from, to] of Object.entries(alias)) {
+    if (Object.prototype.hasOwnProperty.call(out, from)) {
+      // If both exist, prefer the real column (to)
+      if (!Object.prototype.hasOwnProperty.call(out, to)) {
+        out[to] = out[from];
+      }
+      delete out[from];
     }
-  ) {}
+  }
+  return out;
+}
+
+function stripUnknown(obj: Record<string, any>, allowed?: string[]) {
+  if (!allowed) return obj;
+  const out: Record<string, any> = {};
+  for (const k of allowed) {
+    if (Object.prototype.hasOwnProperty.call(obj, k)) out[k] = obj[k];
+  }
+  return out;
+}
+
+function addCompatAliases(row: any) {
+  if (!row || typeof row !== "object") return row;
+
+  // created_date / updated_date aliases (Base44-ish)
+  if (row.created_at && row.created_date === undefined) row.created_date = row.created_at;
+  if (row.updated_at && row.updated_date === undefined) row.updated_date = row.updated_at;
+
+  // user_email alias for profiles (if email exists)
+  if (row.email && row.user_email === undefined) row.user_email = row.email;
+
+  return row;
+}
+
+class SupabaseEntityApi<T extends Record<string, any>> {
+  constructor(private entityKey: string, private cfg: EntityConfig) {}
 
   private applyCriteria(q: any, criteria?: Filter<T>) {
     if (!criteria) return q;
 
-    for (const [k, v] of Object.entries(criteria)) {
+    const raw = criteria as any;
+    const aliased = applyAliases(raw, this.cfg.alias);
+
+    for (const [k, v] of Object.entries(aliased)) {
       if (v === undefined || v === null || v === "") continue;
 
-      // Basic behavior: equality for primitives
-      // If an array is passed as filter value, attempt "in"
       if (Array.isArray(v)) {
         q = q.in(k, v);
       } else {
@@ -88,40 +142,34 @@ class SupabaseEntityApi<T extends Record<string, any>> {
     return q;
   }
 
+  private maybeCache(criteria?: any, rows?: any[]) {
+    if (!this.cfg.cache) return;
+
+    // If cacheKeyField is set, only cache when that field exists in criteria
+    const cacheKey = storageKey(this.entityKey);
+    if (this.cfg.cacheKeyField) {
+      const aliasedCriteria = criteria ? applyAliases(criteria, this.cfg.alias) : null;
+      if (!aliasedCriteria || !Object.prototype.hasOwnProperty.call(aliasedCriteria, this.cfg.cacheKeyField)) return;
+    }
+
+    safeWriteCache(cacheKey, rows ?? []);
+  }
+
   async list(sort?: SortSpec): Promise<(T & { id: ID })[]> {
     const s = parseSort(sort);
-    let q = supabase.from(this.tableName).select("*");
-
+    let q = supabase.from(this.cfg.table).select("*");
     if (s) q = q.order(s.column, { ascending: s.ascending });
 
     const { data, error } = await q;
     if (error) throw error;
-    return (data ?? []) as any;
+
+    const rows = (data ?? []).map(addCompatAliases) as any;
+    return rows;
   }
 
   async filter(criteria: Filter<T>, sort?: SortSpec, limit?: number): Promise<(T & { id: ID })[]> {
-    // Optional fast-path: return cached profile immediately if it matches the requested user_email,
-    // but still re-fetch from Supabase and overwrite cache before returning.
-    const cacheEnabled = !!this.options?.cache;
-    const cacheField = this.options?.cacheKeyField;
-    const cacheKey = storageKey(this.tableName);
-
-    if (cacheEnabled && cacheField && criteria && Object.prototype.hasOwnProperty.call(criteria, cacheField)) {
-      const cached = safeReadCache<any[]>(cacheKey);
-      // only use cached if it actually matches the criteria field
-      const want = (criteria as any)[cacheField];
-      if (cached && Array.isArray(cached) && cached.length > 0) {
-        const match = cached.filter((r) => r?.[cacheField] === want);
-        if (match.length > 0) {
-          // We still fetch fresh below; but returning cached first would require background work.
-          // Instead: we proceed to fetch and then update cache; this keeps correctness.
-          // (If you ever want "instant cached render", we should implement that at the component layer.)
-        }
-      }
-    }
-
     const s = parseSort(sort);
-    let q = supabase.from(this.tableName).select("*");
+    let q = supabase.from(this.cfg.table).select("*");
     q = this.applyCriteria(q, criteria);
     if (s) q = q.order(s.column, { ascending: s.ascending });
     if (typeof limit === "number") q = q.limit(limit);
@@ -129,63 +177,157 @@ class SupabaseEntityApi<T extends Record<string, any>> {
     const { data, error } = await q;
     if (error) throw error;
 
-    const rows = (data ?? []) as any;
+    const rows = (data ?? []).map(addCompatAliases) as any;
 
-    // Cache results if configured (UserProfile)
-    if (cacheEnabled) {
-      // If cacheKeyField is set, only cache when that field exists in criteria
-      if (!cacheField || (criteria && Object.prototype.hasOwnProperty.call(criteria, cacheField))) {
-        safeWriteCache(cacheKey, rows);
-      }
-    }
+    // Cache results if configured
+    this.maybeCache(criteria as any, rows);
 
     return rows;
   }
 
   async create(data: T): Promise<T & { id: ID }> {
+    const aliased = applyAliases(data as any, this.cfg.alias);
+    const payload = stripUnknown(aliased, this.cfg.allowed);
+
     const { data: created, error } = await supabase
-      .from(this.tableName)
-      .insert(data as any)
+      .from(this.cfg.table)
+      .insert(payload as any)
       .select("*")
       .single();
 
     if (error) throw error;
 
+    const row = addCompatAliases(created);
+
     // cache refresh
-    if (this.options?.cache) {
-      safeWriteCache(storageKey(this.tableName), [created]);
+    if (this.cfg.cache) {
+      safeWriteCache(storageKey(this.entityKey), [row]);
     }
 
-    return created as any;
+    return row as any;
   }
 
   async update(id: ID, patch: Partial<T>): Promise<T & { id: ID }> {
+    const aliased = applyAliases(patch as any, this.cfg.alias);
+    const payload = stripUnknown(aliased, this.cfg.allowed);
+
     const { data: updated, error } = await supabase
-      .from(this.tableName)
-      .update(patch as any)
+      .from(this.cfg.table)
+      .update(payload as any)
       .eq("id", id)
       .select("*")
       .single();
 
     if (error) throw error;
 
+    const row = addCompatAliases(updated);
+
     // cache refresh
-    if (this.options?.cache) {
-      safeWriteCache(storageKey(this.tableName), [updated]);
+    if (this.cfg.cache) {
+      safeWriteCache(storageKey(this.entityKey), [row]);
     }
 
-    return updated as any;
+    return row as any;
   }
 
   async delete(id: ID): Promise<void> {
-    const { error } = await supabase.from(this.tableName).delete().eq("id", id);
+    const { error } = await supabase.from(this.cfg.table).delete().eq("id", id);
     if (error) throw error;
 
-    // cache clear (best effort)
-    if (this.options?.cache) {
-      safeClearCache(storageKey(this.tableName));
+    if (this.cfg.cache) {
+      safeClearCache(storageKey(this.entityKey));
     }
   }
+}
+
+// Supabase public tables (from your exported schema snippets):
+// churches, courses, groups, profiles, studies
+const ENTITY: Record<string, EntityConfig> = {
+  ActivityFeed: { table: "activity_feed" }, // if you ever add it later (won't be used now)
+
+  Church: {
+    table: "churches",
+    allowed: ["name", "slug", "description", "created_by"],
+  },
+
+  Course: {
+    table: "courses",
+    allowed: ["church_id", "title", "description", "tags", "cover_image_url", "is_published", "created_by"],
+  },
+
+  StudyGroup: {
+    table: "groups",
+    allowed: [
+      "church_id",
+      "name",
+      "description",
+      "type",
+      "is_public",
+      "meeting_day",
+      "meeting_time",
+      "location",
+      "cover_image_url",
+      "created_by",
+    ],
+  },
+
+  Group: {
+    table: "groups",
+    allowed: [
+      "church_id",
+      "name",
+      "description",
+      "type",
+      "is_public",
+      "meeting_day",
+      "meeting_time",
+      "location",
+      "cover_image_url",
+      "created_by",
+    ],
+  },
+
+  ScriptureStudy: {
+    table: "studies",
+    allowed: [
+      "church_id",
+      "title",
+      "description",
+      "scripture_reference",
+      "book",
+      "difficulty",
+      "estimated_minutes",
+      "tags",
+      "cover_image_url",
+      "is_published",
+      "created_by",
+    ],
+  },
+
+  UserProfile: {
+    table: "profiles",
+    // Support existing UI calls that use user_email
+    alias: { user_email: "email" },
+    allowed: ["id", "email", "display_name", "avatar_url", "role"],
+    cache: true,
+    cacheKeyField: "email",
+  },
+
+  // These are in your old Base44 UI, but you don't have tables for them in Supabase yet.
+  // Leaving them mapped to non-existent tables would create exactly the 404s you saw.
+  // If any page uses these today, you'll need to either:
+  //   (A) add the tables in Supabase, or
+  //   (B) refactor those pages to store sessions/blocks on an existing table.
+  CourseSession: { table: "course_sessions" },
+  CourseEnrollment: { table: "course_enrollments" },
+  Discussion: { table: "discussions" },
+  StudyProgress: { table: "study_progress" },
+  StudyResponse: { table: "study_responses" },
+};
+
+function entityApi(entityKey: string) {
+  const cfg = ENTITY[entityKey];
+  return new SupabaseEntityApi<any>(entityKey, cfg);
 }
 
 export const base44 = {
@@ -193,10 +335,10 @@ export const base44 = {
     async me(): Promise<Base44User> {
       const { data, error } = await supabase.auth.getUser();
       if (error) throw error;
+
       const u = data.user;
       if (!u?.email) throw new Error("Not signed in");
 
-      // Prefer metadata display name if present; otherwise fall back.
       const full_name =
         (u.user_metadata as any)?.full_name ||
         (u.user_metadata as any)?.name ||
@@ -212,25 +354,24 @@ export const base44 = {
 
     async signOut() {
       await supabase.auth.signOut();
-      // clear cached profile to avoid stale header
       safeClearCache(storageKey("UserProfile"));
     },
   },
 
   entities: {
-    ActivityFeed: new SupabaseEntityApi<any>("ActivityFeed"),
-    Church: new SupabaseEntityApi<any>("Church"),
-    Course: new SupabaseEntityApi<any>("Course"),
-    CourseEnrollment: new SupabaseEntityApi<any>("CourseEnrollment"),
-    CourseSession: new SupabaseEntityApi<any>("CourseSession"),
-    Discussion: new SupabaseEntityApi<any>("Discussion"),
-    ScriptureStudy: new SupabaseEntityApi<any>("ScriptureStudy"),
-    StudyGroup: new SupabaseEntityApi<any>("StudyGroup"),
-    StudyProgress: new SupabaseEntityApi<any>("StudyProgress"),
-    StudyResponse: new SupabaseEntityApi<any>("StudyResponse"),
+    ActivityFeed: entityApi("ActivityFeed"),
+    Church: entityApi("Church"),
+    Course: entityApi("Course"),
+    StudyGroup: entityApi("StudyGroup"),
+    Group: entityApi("Group"),
+    ScriptureStudy: entityApi("ScriptureStudy"),
+    UserProfile: entityApi("UserProfile"),
 
-    // Cache profile so header/profile screens can be snappy, but DB remains source of truth.
-    UserProfile: new SupabaseEntityApi<any>("UserProfile", { cache: true, cacheKeyField: "user_email" }),
-    Group: new SupabaseEntityApi<any>("Group"), // if your code references base44.entities.Group
+    // present for compatibility (but will only work if you create these tables)
+    CourseSession: entityApi("CourseSession"),
+    CourseEnrollment: entityApi("CourseEnrollment"),
+    Discussion: entityApi("Discussion"),
+    StudyProgress: entityApi("StudyProgress"),
+    StudyResponse: entityApi("StudyResponse"),
   },
 };
