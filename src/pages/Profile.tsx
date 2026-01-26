@@ -103,7 +103,16 @@ export default function Profile() {
   // Keep this as-is (it was working for you). It just feeds the dropdown + badges.
   const { data: churches = [] } = useQuery({
     queryKey: ["churches"],
-    queryFn: () => base44.entities.Church.list(),
+    enabled: !!authUser,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("churches")
+        .select("id, name")
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+      return data ?? [];
+    },
   });
 
   const { data: myActivity = [] } = useQuery({
