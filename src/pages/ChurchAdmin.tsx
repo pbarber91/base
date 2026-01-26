@@ -127,7 +127,7 @@ export default function ChurchAdmin() {
                       <p className="text-sm text-slate-600 mt-2 line-clamp-2">{c.description}</p>
                     )}
                     <div className="mt-4 flex items-center gap-3">
-                      <Link to={`${createPageUrl("ChurchAdmin")}?church=${c.id}`}>
+                      <Link to={`/church-admin/manage?church=${c.id}`}>
                         <Button variant="outline" className="gap-2">
                           <Settings2 className="h-4 w-4" />
                           Manage

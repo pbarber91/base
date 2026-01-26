@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AppHeader from "@/components/layout/AppHeader";
 import { AuthProvider } from "@/auth/AuthProvider";
 import RequireAuth from "@/auth/RequireAuth";
+import ChurchManage from "./pages/ChurchManage";
 
 import Home from "./pages/Home";
 import GetStarted from "./pages/GetStarted";
@@ -69,7 +70,7 @@ export default function App() {
               <Route path="/get-started" element={<GetStarted />} />
               <Route path="/setup-profile" element={<SetupProfile />} />
               <Route path="/profile" element={<Profile />} />
-
+              <Route path="/church-admin/manage" element={<RequireAuth><ChurchManage /></RequireAuth>} />
               <Route path="/studies" element={<Studies />} />
               <Route path="/study" element={<StudyDetail />} />
               <Route path="/start-study" element={<StartStudy />} />
