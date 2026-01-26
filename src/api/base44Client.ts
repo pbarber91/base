@@ -1,143 +1,142 @@
 // src/api/base44Client.ts
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 
-type ID = string;
-type SortSpec = string | null | undefined; // e.g. 'created_date' or '-created_date'
-type FilterShape = Record<string, any>;
+// ---- Supabase client (exported) ----
+// Make sure these exist in Vercel as well:
+// VITE_SUPABASE_URL
+// VITE_SUPABASE_ANON_KEY
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
-// Vercel must have these set as Environment Variables
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
-
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+if (!supabaseUrl || !supabaseAnonKey) {
   // eslint-disable-next-line no-console
-  console.error("Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in env.");
+  console.warn(
+    "[supabase] Missing env vars. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
+  );
 }
 
-// ✅ Exported for pages that need direct storage access (uploads)
-export const supabase = createClient(SUPABASE_URL ?? "", SUPABASE_ANON_KEY ?? "");
+export const supabase = createClient(supabaseUrl ?? "", supabaseAnonKey ?? "", {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
 
-function applySort(q: any, sort?: SortSpec) {
-  if (!sort) return q;
-  const desc = sort.startsWith("-");
-  const field = desc ? sort.slice(1) : sort;
-  return q.order(field, { ascending: !desc });
-}
+// ---- Existing Base44 localStorage shim (kept for legacy parts of the app) ----
+const LS_PREFIX = "base44_port_";
 
-function applyFilters(q: any, where?: FilterShape) {
-  if (!where) return q;
-  for (const [k, v] of Object.entries(where)) {
-    if (v === undefined) continue;
-    if (v === null) q = q.is(k, null);
-    else if (Array.isArray(v)) q = q.in(k, v);
-    else q = q.eq(k, v);
-  }
-  return q;
-}
-
-class EntityApi<T extends Record<string, any>> {
-  constructor(private table: string, private alias?: Record<string, string>) {}
-
-  private mapWhere(where?: FilterShape) {
-    if (!where || !this.alias) return where ?? {};
-    const out: FilterShape = { ...where };
-    for (const [from, to] of Object.entries(this.alias)) {
-      if (Object.prototype.hasOwnProperty.call(out, from)) {
-        out[to] = out[from];
-        delete out[from];
-      }
-    }
-    return out;
-  }
-
-  async filter(where: FilterShape = {}, sort?: SortSpec, limit?: number): Promise<(T & { id: ID })[]> {
-    const mapped = this.mapWhere(where);
-    let q: any = supabase.from(this.table).select("*");
-    q = applyFilters(q, mapped);
-    q = applySort(q, sort);
-    if (typeof limit === "number") q = q.limit(limit);
-
-    const { data, error } = await q;
-    if (error) throw error;
-    return (data ?? []) as any;
-  }
-
-  async list(sort?: SortSpec): Promise<(T & { id: ID })[]> {
-    let q: any = supabase.from(this.table).select("*");
-    q = applySort(q, sort);
-    const { data, error } = await q;
-    if (error) throw error;
-    return (data ?? []) as any;
-  }
-
-  async create(payload: Partial<T>): Promise<T & { id: ID }> {
-    const { data, error } = await supabase.from(this.table).insert(payload as any).select("*").single();
-    if (error) throw error;
-    return data as any;
-  }
-
-  async update(id: ID, payload: Partial<T>): Promise<T & { id: ID }> {
-    const { data, error } = await supabase
-      .from(this.table)
-      .update(payload as any)
-      .eq("id", id)
-      .select("*")
-      .single();
-    if (error) throw error;
-    return data as any;
-  }
-
-  async delete(id: ID): Promise<void> {
-    const { error } = await supabase.from(this.table).delete().eq("id", id);
-    if (error) throw error;
+function load(key: string) {
+  try {
+    const raw = localStorage.getItem(LS_PREFIX + key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
 }
 
-export type Base44User = {
-  id: string;
-  email: string | null;
-  full_name?: string | null;
-  role?: string | null;
-};
+function save(key: string, value: any) {
+  localStorage.setItem(LS_PREFIX + key, JSON.stringify(value));
+}
+
+function genId() {
+  return crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+}
+
+function sortBy(list: any[], field: string | null) {
+  if (!field) return list;
+  return [...list].sort((a, b) => {
+    const av = a?.[field];
+    const bv = b?.[field];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return String(av).localeCompare(String(bv));
+  });
+}
 
 export const base44 = {
-  supabase,
-
   auth: {
-    async me(): Promise<Base44User> {
-      const { data, error } = await supabase.auth.getUser();
-      if (error) throw error;
-      const u = data.user;
-      const full_name =
-        (u.user_metadata as any)?.full_name ??
-        (u.user_metadata as any)?.name ??
-        (u.user_metadata as any)?.display_name ??
-        null;
-      const role = (u.user_metadata as any)?.role ?? null;
+    async me() {
+      // legacy behavior: best-effort from Supabase session if available
+      const { data } = await supabase.auth.getUser();
+      const u = data?.user;
+      if (!u) throw new Error("Not authenticated");
+
+      const fullName =
+        (u.user_metadata as any)?.full_name ||
+        (u.user_metadata as any)?.name ||
+        u.email ||
+        "";
 
       return {
         id: u.id,
-        email: u.email ?? null,
-        full_name,
-        role,
+        email: u.email,
+        full_name: fullName,
       };
     },
   },
-
   entities: {
-    // ✅ IMPORTANT: map to your actual tables
-    Church: new EntityApi<any>("churches"),
-    ChurchMember: new EntityApi<any>("church_members"),
+    // Generic localStorage entity store:
+    // base44.entities.<Entity>.filter/create/update/delete
+    _entity(name: string) {
+      return {
+        async filter(where: Record<string, any> = {}, order: string | null = null, limit?: number) {
+          const rows = (load(name) ?? []) as any[];
+          const filtered = rows.filter((r) =>
+            Object.entries(where).every(([k, v]) => r?.[k] === v)
+          );
+          const ordered = sortBy(filtered, order);
+          return typeof limit === "number" ? ordered.slice(0, limit) : ordered;
+        },
+        async create(data: any) {
+          const rows = (load(name) ?? []) as any[];
+          const row = {
+            id: genId(),
+            created_date: new Date().toISOString(),
+            ...data,
+          };
+          rows.push(row);
+          save(name, rows);
+          return row;
+        },
+        async update(id: string, patch: any) {
+          const rows = (load(name) ?? []) as any[];
+          const idx = rows.findIndex((r) => r?.id === id);
+          if (idx === -1) throw new Error(`${name} row not found: ${id}`);
+          rows[idx] = { ...rows[idx], ...patch };
+          save(name, rows);
+          return rows[idx];
+        },
+        async delete(id: string) {
+          const rows = (load(name) ?? []) as any[];
+          save(
+            name,
+            rows.filter((r) => r?.id !== id)
+          );
+          return true;
+        },
+      };
+    },
 
-    Course: new EntityApi<any>("courses"),
-    CourseSession: new EntityApi<any>("course_sessions"),
-    CourseEnrollment: new EntityApi<any>("course_enrollments"),
-
-    StudyGroup: new EntityApi<any>("groups"),
-    ScriptureStudy: new EntityApi<any>("studies"),
-
-    // ✅ Your real profile table is public.profiles
-    // ✅ compatibility: UI still uses user_email in places → map to email
-    UserProfile: new EntityApi<any>("profiles", { user_email: "email" }),
+    // Keep these names since your pages already reference them
+    get UserProfile() {
+      return base44.entities._entity("UserProfile");
+    },
+    get Church() {
+      return base44.entities._entity("Church");
+    },
+    get Course() {
+      return base44.entities._entity("Course");
+    },
+    get CourseSession() {
+      return base44.entities._entity("CourseSession");
+    },
+    get ScriptureStudy() {
+      return base44.entities._entity("ScriptureStudy");
+    },
+    get StudyGroup() {
+      return base44.entities._entity("StudyGroup");
+    },
   },
 };
