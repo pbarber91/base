@@ -1,119 +1,176 @@
+// src/api/base44Client.ts
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-type OrderBy = string | null | undefined;
-type FilterShape = Record<string, any>;
+type ID = string;
+type SortSpec = string | null | undefined; // e.g. '-created_date'
+type Filter<T> = Partial<Record<keyof T, any>>;
 
-function assertEnv(name: string, value: string | undefined): string {
-  if (!value) throw new Error(`Missing env var: ${name}`);
-  return value;
+// IMPORTANT: These must be set in Vercel Project → Settings → Environment Variables
+// (do NOT rely on uploading .env.local into Vercel)
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  // Fail loudly so production doesn't silently fall back to "nothing works"
+  // eslint-disable-next-line no-console
+  console.error(
+    "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Set these in Vercel env vars."
+  );
 }
 
-const supabaseUrl = assertEnv("VITE_SUPABASE_URL", import.meta.env.VITE_SUPABASE_URL);
-const supabaseAnonKey = assertEnv("VITE_SUPABASE_ANON_KEY", import.meta.env.VITE_SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL ?? "", SUPABASE_ANON_KEY ?? "");
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
-type Base44User = {
-  id: string;
-  email: string | null;
-  full_name?: string | null;
-  role?: string | null;
+// Map Base44 exported entity names → real Postgres table names
+// Update these if your actual table names differ.
+const TABLES: Record<string, string> = {
+  ActivityFeed: "activity_feed",
+  Church: "churches",
+  Course: "courses",
+  CourseEnrollment: "course_enrollments",
+  CourseSession: "course_sessions",
+  Discussion: "discussions",
+  ScriptureStudy: "scripture_studies",
+  StudyGroup: "study_groups",
+  StudyProgress: "study_progress",
+  StudyResponse: "study_responses",
+  UserProfile: "user_profiles",
+  ChurchMember: "church_members",
 };
 
-function applyAliases(obj: FilterShape, alias?: Record<string, string>) {
-  if (!alias) return obj;
-  const out: FilterShape = { ...obj };
-  for (const [from, to] of Object.entries(alias)) {
-    if (Object.prototype.hasOwnProperty.call(out, from) && !Object.prototype.hasOwnProperty.call(out, to)) {
-      out[to] = out[from];
-    }
-    if (Object.prototype.hasOwnProperty.call(out, from)) delete out[from];
-  }
-  return out;
+function applySortToQuery<T>(
+  q: ReturnType<SupabaseClient["from"]>,
+  sort?: SortSpec
+) {
+  if (!sort) return q;
+  const desc = sort.startsWith("-");
+  const field = desc ? sort.slice(1) : sort;
+  return (q as any).order(field, { ascending: !desc });
 }
 
-class SupabaseEntityApi<T extends Record<string, any>> {
-  constructor(
-    private client: SupabaseClient,
-    private table: string,
-    private alias?: Record<string, string>
-  ) {}
+function applyFilterToQuery<T extends Record<string, any>>(
+  q: any,
+  criteria: Filter<T>
+) {
+  for (const [k, v] of Object.entries(criteria ?? {})) {
+    if (v === undefined || v === null || v === "") continue;
+    q = q.eq(k, v);
+  }
+  return q;
+}
 
-  async filter(where: FilterShape = {}, orderBy?: OrderBy, limit?: number): Promise<T[]> {
-    const aliased = applyAliases(where || {}, this.alias);
+class EntityApi<T extends Record<string, any>> {
+  constructor(private entityName: string) {}
 
-    let q = this.client.from(this.table).select("*");
+  private tableName() {
+    return TABLES[this.entityName] ?? this.entityName;
+  }
 
-    for (const [k, v] of Object.entries(aliased)) {
-      if (v === undefined) continue;
-      if (v === null) q = q.is(k, null);
-      else if (Array.isArray(v)) q = q.in(k, v);
-      else q = q.eq(k, v);
-    }
-
-    if (orderBy) q = q.order(orderBy as string, { ascending: true });
-    if (limit && limit > 0) q = q.limit(limit);
+  async list(sort?: SortSpec): Promise<(T & { id: ID })[]> {
+    const table = this.tableName();
+    let q: any = supabase.from(table).select("*");
+    q = applySortToQuery<T>(q, sort);
 
     const { data, error } = await q;
-    if (error) throw error;
-    return (data ?? []) as T[];
+    if (error) throw new Error(`[${this.entityName}.list] ${error.message}`);
+    return (data ?? []) as any;
   }
 
-  async create(payload: Partial<T>): Promise<T> {
-    const { data, error } = await this.client.from(this.table).insert(payload).select("*").single();
-    if (error) throw error;
-    return data as T;
+  async filter(
+    criteria: Filter<T>,
+    sort?: SortSpec,
+    limit?: number
+  ): Promise<(T & { id: ID })[]> {
+    const table = this.tableName();
+    let q: any = supabase.from(table).select("*");
+    q = applyFilterToQuery<T>(q, criteria);
+    q = applySortToQuery<T>(q, sort);
+    if (typeof limit === "number") q = q.limit(limit);
+
+    const { data, error } = await q;
+    if (error) throw new Error(`[${this.entityName}.filter] ${error.message}`);
+    return (data ?? []) as any;
   }
 
-  async update(id: string, payload: Partial<T>): Promise<T> {
-    const { data, error } = await this.client.from(this.table).update(payload).eq("id", id).select("*").single();
-    if (error) throw error;
-    return data as T;
+  async create(data: T): Promise<T & { id: ID }> {
+    const table = this.tableName();
+    const { data: created, error } = await supabase
+      .from(table)
+      .insert(data as any)
+      .select("*")
+      .single();
+
+    if (error) throw new Error(`[${this.entityName}.create] ${error.message}`);
+    return created as any;
   }
 
-  async delete(id: string): Promise<void> {
-    const { error } = await this.client.from(this.table).delete().eq("id", id);
-    if (error) throw error;
+  async update(id: ID, patch: Partial<T>): Promise<T & { id: ID }> {
+    const table = this.tableName();
+    const { data: updated, error } = await supabase
+      .from(table)
+      .update(patch as any)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) throw new Error(`[${this.entityName}.update] ${error.message}`);
+    return updated as any;
+  }
+
+  async delete(id: ID): Promise<void> {
+    const table = this.tableName();
+    const { error } = await supabase.from(table).delete().eq("id", id);
+    if (error) throw new Error(`[${this.entityName}.delete] ${error.message}`);
   }
 }
 
-export const base44 = {
-  supabase,
+// Minimal user shape used by pages
+export type Base44User = {
+  id?: string;
+  email: string;
+  full_name?: string;
+};
 
+export const base44 = {
   auth: {
     async me(): Promise<Base44User> {
       const { data, error } = await supabase.auth.getUser();
-      if (error) throw error;
-
+      if (error) throw new Error(`[auth.me] ${error.message}`);
       const u = data.user;
+      if (!u?.email) throw new Error("[auth.me] Not signed in");
 
-      const full_name =
-        (u.user_metadata as any)?.full_name ??
-        (u.user_metadata as any)?.name ??
-        (u.user_metadata as any)?.display_name ??
-        null;
+      // Prefer metadata full_name if present
+      const fullName =
+        (u.user_metadata?.full_name as string | undefined) ||
+        (u.user_metadata?.name as string | undefined);
 
-      const role = (u.user_metadata as any)?.role ?? null;
+      return { id: u.id, email: u.email, full_name: fullName };
+    },
 
-      return {
-        id: u.id,
-        email: u.email ?? null,
-        full_name,
-        role,
-      };
+    redirectToLogin() {
+      window.location.href = "/get-started";
+    },
+
+    async signOut() {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw new Error(`[auth.signOut] ${error.message}`);
     },
   },
 
   entities: {
-    Church: new SupabaseEntityApi<any>(supabase, "churches"),
-    Course: new SupabaseEntityApi<any>(supabase, "courses"),
-    ScriptureStudy: new SupabaseEntityApi<any>(supabase, "studies"),
-    StudyGroup: new SupabaseEntityApi<any>(supabase, "groups"),
-
-    // ✅ compatibility: UI still uses user_email in places
-    UserProfile: new SupabaseEntityApi<any>(supabase, "profiles", { user_email: "email" }),
-
-    ChurchMember: new SupabaseEntityApi<any>(supabase, "church_members"),
-    GroupMember: new SupabaseEntityApi<any>(supabase, "group_members"),
+    ActivityFeed: new EntityApi<any>("ActivityFeed"),
+    Church: new EntityApi<any>("Church"),
+    Course: new EntityApi<any>("Course"),
+    CourseEnrollment: new EntityApi<any>("CourseEnrollment"),
+    CourseSession: new EntityApi<any>("CourseSession"),
+    Discussion: new EntityApi<any>("Discussion"),
+    ScriptureStudy: new EntityApi<any>("ScriptureStudy"),
+    StudyGroup: new EntityApi<any>("StudyGroup"),
+    StudyProgress: new EntityApi<any>("StudyProgress"),
+    StudyResponse: new EntityApi<any>("StudyResponse"),
+    UserProfile: new EntityApi<any>("UserProfile"),
+    ChurchMember: new EntityApi<any>("ChurchMember"),
   },
+
+  // Expose raw client if you need it elsewhere
+  supabase,
 };
