@@ -319,7 +319,7 @@ export default function AppHeader() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">Sign in</h2>
-                <p className="text-sm text-slate-500">Password first, magic link second.</p>
+                <p className="text-sm text-slate-500">Enter Password or send yourself a magic link!</p>
               </div>
               <button
                 onClick={() => !busy && setAuthOpen(false)}
@@ -401,9 +401,7 @@ export default function AppHeader() {
               </button>
             </form>
 
-            <div className="mt-3 text-xs text-slate-500">
-              After sign-in, you’ll land back on: <span className="font-mono text-slate-700">{returnTo}</span>
-            </div>
+            
           </div>
         </div>
       )}

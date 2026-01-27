@@ -8,6 +8,10 @@ type ProfileLike = {
   role?: string | null;
   is_admin?: boolean | null;
   church_id?: string | null;
+
+  // Added: lets the app reliably force onboarding when no row exists in `profiles`
+  needs_setup?: boolean;
+
   [key: string]: any;
 };
 
@@ -56,95 +60,79 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const mountedRef = useRef(true);
 
   const fetchProfile = async (u: User | null) => {
-    console.log("fetchProfile called with user:", u?.email);
-
     if (!u) {
-      console.log("No user, setting profile to null");
       setProfile(null);
       return;
     }
 
-    // Start with basic profile from user object
-    let profile: ProfileLike = { id: u.id, email: u.email ?? null };
+    // Start with a minimal profile shape
+    let nextProfile: ProfileLike = { id: u.id, email: u.email ?? null };
 
-    // Try to load profile from `profiles` table. If it doesn't exist, fail gracefully.
     try {
-      console.log("Starting profile query for user ID:", u.id);
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", u.id)
-        .maybeSingle();
-
-      console.log("Profile query completed. Error:", error, "Data:", data);
+      const { data, error } = await supabase.from("profiles").select("*").eq("id", u.id).maybeSingle();
 
       if (error) {
         // If RLS/table isn't ready yet, don't brick the app.
-        console.warn("Profile fetch error (RLS or table issue):", error.message);
-        // Fall through to use basic profile
+        // Keep minimal profile (but DO NOT mark needs_setup here because we can't be sure)
+        // eslint-disable-next-line no-console
+        console.warn("Profile fetch error:", error.message);
       } else if (data) {
-        console.log("Profile loaded successfully:", data);
-        profile = data as ProfileLike;
+        nextProfile = { ...(data as any), needs_setup: false };
       } else {
-        console.log("No profile data found in database");
-        // Check if admin role is in user's app_metadata
-        if (u.user_metadata?.role === "admin" || u.user_metadata?.is_admin === true) {
-          console.log("Found admin status in user metadata");
-          profile.role = u.user_metadata.role;
-          profile.is_admin = u.user_metadata.is_admin;
-        }
+        // No row exists => user must complete SetupProfile
+        nextProfile.needs_setup = true;
+
+        // Preserve admin hints from metadata if present
+        if (u.user_metadata?.role) nextProfile.role = u.user_metadata.role;
+        if (u.user_metadata?.is_admin != null) nextProfile.is_admin = u.user_metadata.is_admin;
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Profile fetch exception:", err);
-      // Use basic profile on exception
+      // Keep minimal profile
     }
 
-    setProfile(profile);
+    if (!mountedRef.current) return;
+    setProfile(nextProfile);
   };
 
   const refreshProfile = async () => {
-    await fetchProfile(supabase.auth.getUser ? (await supabase.auth.getUser()).data.user : user);
+    const { data } = await supabase.auth.getUser();
+    await fetchProfile(data.user ?? null);
   };
 
   useEffect(() => {
-    console.log("AuthProvider effect: initializing");
     mountedRef.current = true;
 
-    // Initialize immediately
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
         const sess = data.session ?? null;
-
-        console.log("Session check completed. Session exists:", !!sess);
 
         if (!mountedRef.current) return;
 
         setSession(sess);
         setUser(sess?.user ?? null);
 
-        // Set loading to false immediately - profile can load in background
+        // Important: stop blocking UI; profile loads async
         setLoading(false);
 
-        // Fetch profile asynchronously without blocking UI
-        fetchProfile(sess?.user ?? null);
+        void fetchProfile(sess?.user ?? null);
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error("Session check error:", err);
         if (mountedRef.current) setLoading(false);
       }
     })();
 
-    // Listen for auth changes
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
-      console.log("Auth state changed:", _event, "User:", sess?.user?.email);
       if (!mountedRef.current) return;
 
       setSession(sess ?? null);
       setUser(sess?.user ?? null);
       setLoading(false);
 
-      // Fetch profile asynchronously
-      fetchProfile(sess?.user ?? null);
+      void fetchProfile(sess?.user ?? null);
     });
 
     return () => {
@@ -154,37 +142,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const isAdmin = useMemo(() => {
-    console.log("Checking isAdmin. User:", user?.email, "Profile:", profile);
-    if (!user) {
-      console.log("No user, isAdmin = false");
-      return false;
+    if (!user) return false;
+
+    if (profile?.is_admin === true) return true;
+
+    if (typeof profile?.role === "string") {
+      const r = profile.role.toLowerCase();
+      if (r === "admin" || r === "superadmin") return true;
     }
 
-    // Check profile is_admin flag
-    if (profile?.is_admin === true) {
-      console.log("✓ is_admin flag is true");
-      return true;
-    }
+    const metaRole = String((user.user_metadata as any)?.role ?? "").toLowerCase();
+    if (metaRole === "admin" || metaRole === "superadmin") return true;
+    if ((user.user_metadata as any)?.is_admin === true) return true;
 
-    // Check profile role
-    if (typeof profile?.role === "string" && profile.role.toLowerCase() === "admin") {
-      console.log("✓ role is admin:", profile.role);
-      return true;
-    }
+    const appRole = String((user.app_metadata as any)?.role ?? "").toLowerCase();
+    if (appRole === "admin" || appRole === "superadmin") return true;
+    if ((user.app_metadata as any)?.is_admin === true) return true;
 
-    // Check user metadata
-    if (user.user_metadata?.role === "admin" || user.user_metadata?.is_admin === true) {
-      console.log("✓ Found admin in user metadata");
-      return true;
-    }
-
-    // Check user app_metadata
-    if (user.app_metadata?.role === "admin" || user.app_metadata?.is_admin === true) {
-      console.log("✓ Found admin in app_metadata");
-      return true;
-    }
-
-    console.log("✗ Not admin. profile:", { is_admin: profile?.is_admin, role: profile?.role }, "user_metadata:", user.user_metadata);
     return false;
   }, [user, profile]);
 
@@ -205,9 +179,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
-    // Make sign-out "reliable":
-    // 1) always clear UI state even if supabase call hangs/errors
-    // 2) also remove local storage keys so refresh won't resurrect a session
     setLoading(true);
 
     const hardClear = () => {
@@ -216,7 +187,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setProfile(null);
       setLoading(false);
       try {
-        // supabase-js v2 stores tokens in localStorage with keys including "supabase.auth"
         for (let i = localStorage.length - 1; i >= 0; i--) {
           const k = localStorage.key(i);
           if (k && k.includes("supabase") && k.includes("auth")) {
@@ -229,14 +199,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     try {
-      // Timeout so we never get stuck in "Signing out..."
       await Promise.race([
         supabase.auth.signOut(),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Sign out timed out")), 6000)),
       ]);
       hardClear();
     } catch {
-      // Even if it errors/times out, we still hard-clear the app state.
       hardClear();
     }
   };
