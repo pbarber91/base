@@ -66,15 +66,15 @@ export default function Auth() {
               <Mail className="h-6 w-6 text-amber-700" />
             </div>
             <div>
-              <h1 className="text-2xl font-serif font-bold text-slate-800">Sign in</h1>
-              <p className="text-sm text-slate-600">We’ll email you a magic link.</p>
+              <h1 className="text-2xl font-serif font-bold text-slate-800">Sign in/Sign up</h1>
+              <p className="text-sm text-slate-600">First time? Same flow—your account is created automatically!</p>
             </div>
           </div>
 
           {sent ? (
             <div className="space-y-3">
               <div className="text-sm text-slate-700">
-                If an account exists (or can be created), a sign-in link has been sent to:
+                A sign-in link has been sent to:
               </div>
               <div className="font-medium text-slate-900 break-all">{email.trim()}</div>
               <div className="text-xs text-slate-500">
@@ -106,9 +106,7 @@ export default function Auth() {
                 Email me a sign-in link
               </Button>
 
-              <div className="text-xs text-slate-500">
-                First time? Same flow—your account is created automatically!
-              </div>
+              
             </div>
           )}
         </GradientCard>
