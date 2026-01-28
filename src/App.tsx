@@ -1,4 +1,3 @@
-// src/App.tsx
 import React from "react";
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -38,8 +37,6 @@ import AdminStudies from "./pages/AdminStudies";
 import StudyBuilder from "./pages/StudyBuilder";
 import Auth from "./pages/Auth";
 
-// ✅ NEW
-import ChurchInvite from "./pages/ChurchInvite";
 import UserAdmin from "./pages/UserAdmin";
 
 const queryClient = new QueryClient({
@@ -76,24 +73,8 @@ export default function App() {
               <Route path="/get-started" element={<GetStarted />} />
               <Route path="/setup-profile" element={<SetupProfile />} />
               <Route path="/profile" element={<Profile />} />
-              <Route
-                path="/church-admin/manage"
-                element={
-                  <RequireAuth>
-                    <ChurchManage />
-                  </RequireAuth>
-                }
-              />
 
-              {/* ✅ NEW: Invite Members */}
-              <Route
-                path="/church-admin/invite"
-                element={
-                  <RequireAuth>
-                    <ChurchInvite />
-                  </RequireAuth>
-                }
-              />
+              <Route path="/church-admin/manage" element={<RequireAuth><ChurchManage /></RequireAuth>} />
 
               <Route path="/studies" element={<Studies />} />
               <Route path="/study" element={<StudyDetail />} />
@@ -111,6 +92,7 @@ export default function App() {
               <Route path="/community" element={<Community />} />
 
               <Route path="/create-church" element={<CreateChurch />} />
+
               <Route
                 path="/church-admin"
                 element={
@@ -154,7 +136,7 @@ export default function App() {
                 }
               />
 
-              {/* ✅ NEW: User Admin */}
+              {/* New: User Admin */}
               <Route
                 path="/admin/users"
                 element={
