@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { base44 } from "@/api/base44Client";
 import { useQuery } from "@tanstack/react-query";
 import HeroSection from "@/components/home/HeroSection";
@@ -8,55 +8,108 @@ import StudyCard from "@/components/studies/StudyCard";
 import CourseCard from "@/components/courses/CourseCard";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Loader2 } from "lucide-react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { motion } from "framer-motion";
 import { useAuth } from "@/auth/AuthProvider";
 
 export default function Home() {
-  const [userLegacy, setUserLegacy] = useState<any>(null);
-
-  const { user, profile, loading } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
 
-  // Legacy: some components still expect "user" shape (email/full_name)
+  // Keep legacy user fetch for HeroSection prop compatibility
+  const [legacyUser, setLegacyUser] = useState<any>(null);
   useEffect(() => {
-    base44.auth.me().then(setUserLegacy).catch(() => setUserLegacy(null));
+    base44.auth
+      .me()
+      .then(setLegacyUser)
+      .catch(() => setLegacyUser(null));
   }, []);
 
-  // ✅ HARD GATE: logged in but no Supabase profile => onboarding
-  useEffect(() => {
-    if (loading) return;
-    if (!user) return;
+  // Source of truth for auth/profile state
+  const { user, profile, loading } = useAuth();
 
-    const path = location.pathname.toLowerCase();
-    const isOnboardingRoute =
-      path.startsWith("/get-started") ||
-      path.startsWith("/setup-profile") ||
-      path.startsWith("/createchurch") ||
-      path.startsWith("/auth");
+  const profileCompletedAt = (profile as any)?.profile_completed_at ?? null;
 
-    if (!isOnboardingRoute && !profile) {
-      navigate("/get-started", { replace: true });
+  const shouldShowGetStartedBanner = useMemo(() => {
+    if (loading) return false;
+
+    // Logged out => show banner
+    if (!user) return true;
+
+    // Logged in but not completed => show banner
+    return !profileCompletedAt;
+  }, [loading, user, profileCompletedAt]);
+
+  const bannerTitle = useMemo(() => {
+    if (!user) return "New here?";
+    return "Finish setting up your profile";
+  }, [user]);
+
+  const bannerBody = useMemo(() => {
+    if (!user) {
+      return "Sign in with a magic link to start studies, join groups, and connect with your church.";
     }
-  }, [loading, user, profile, navigate, location.pathname]);
+    return "You’re logged in, but your profile isn’t complete yet. Finish setup to unlock the full experience.";
+  }, [user]);
+
+  const bannerCtaLabel = useMemo(() => {
+    if (!user) return "Get Started";
+    return "Complete Setup";
+  }, [user]);
+
+  const bannerCtaTarget = useMemo(() => {
+    // We always send to /get-started — it will decide where to route next.
+    return createPageUrl("GetStarted");
+  }, []);
 
   const { data: featuredStudies = [], isLoading: loadingStudies } = useQuery({
     queryKey: ["featured-studies"],
     queryFn: () => base44.entities.ScriptureStudy.filter({ is_published: true }, "-created_date", 4),
-    enabled: !!user,
+    enabled: !!legacyUser,
   });
 
   const { data: featuredCourses = [], isLoading: loadingCourses } = useQuery({
     queryKey: ["featured-courses"],
     queryFn: () => base44.entities.Course.filter({ is_published: true, visibility: "public" }, "-enrollment_count", 4),
-    enabled: !!user,
+    enabled: !!legacyUser,
   });
 
   return (
     <div className="min-h-screen bg-white">
-      <HeroSection user={userLegacy} />
+      {/* Onboarding Banner: visible only when logged out OR profile not completed.
+          Once logged in + profile completed => banner disappears entirely. */}
+      {shouldShowGetStartedBanner ? (
+        <div className="sticky top-0 z-40 border-b bg-gradient-to-r from-amber-50 via-white to-orange-50">
+          <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col md:flex-row md:items-center gap-3 md:gap-6">
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-slate-800">{bannerTitle}</div>
+              <div className="text-sm text-slate-600">{bannerBody}</div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                className="bg-amber-600 hover:bg-amber-700 gap-2"
+                onClick={() => navigate(bannerCtaTarget)}
+              >
+                {bannerCtaLabel}
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+
+              {/* Secondary quick action for logged-in users */}
+              {user ? (
+                <Button
+                  variant="outline"
+                  onClick={() => navigate(createPageUrl("Profile"))}
+                >
+                  View Profile
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <HeroSection user={legacyUser} />
       <FeatureCards />
       <DifficultyTracks />
 
@@ -144,13 +197,14 @@ export default function Home() {
         </div>
       </section>
 
-      {/* CTA */}
+      {/* CTA Section */}
       <section className="py-24 px-6 bg-gradient-to-br from-amber-50 via-white to-orange-50">
         <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-3xl md:text-4xl font-serif font-bold text-slate-800 mb-6">Ready to Grow in Your Faith?</h2>
+          <h2 className="text-3xl md:text-4xl font-serif font-bold text-slate-800 mb-6">
+            Ready to Grow in Your Faith?
+          </h2>
           <p className="text-lg text-slate-600 mb-10 max-w-2xl mx-auto">
-            Join thousands of believers who are diving deeper into scripture and building meaningful connections with their
-            church community.
+            Join believers who are diving deeper into scripture and building meaningful connections with their church community.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
             <Link to={createPageUrl("Studies")}>
