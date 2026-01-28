@@ -1,16 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@/auth/AuthProvider";
-import { createPageUrl } from "@/utils";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import GradientCard from "@/components/ui/GradientCard";
-
-import { Camera, Check, Loader2, User } from "lucide-react";
+import { User, Loader2, Camera, Check } from "lucide-react";
+import { createPageUrl } from "@/utils";
+import { useAuth } from "@/auth/AuthProvider";
+import { useNavigate } from "react-router-dom";
 
 type ProfileRow = {
   id: string;
@@ -20,7 +18,7 @@ type ProfileRow = {
   bio: string | null;
   faith_journey_stage: string | null;
   church_id: string | null;
-  profile_completed_at?: string | null;
+  profile_completed_at: string | null;
 };
 
 type ChurchRow = {
@@ -28,111 +26,124 @@ type ChurchRow = {
   name: string;
 };
 
-function nowIso() {
-  return new Date().toISOString();
-}
+const faithStages = [
+  { value: "seeking", label: "Seeking" },
+  { value: "new_believer", label: "New Believer" },
+  { value: "growing", label: "Growing" },
+  { value: "mature", label: "Mature" },
+  { value: "leader", label: "Leader" },
+];
 
 export default function SetupProfile() {
   const { user, supabase, loading, refreshProfile } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [displayName, setDisplayName] = useState("");
   const [bio, setBio] = useState("");
-  const [faithStage, setFaithStage] = useState<string>("growing");
+  const [faithStage, setFaithStage] = useState("growing");
   const [churchId, setChurchId] = useState<string>("");
   const [avatarUrl, setAvatarUrl] = useState<string>("");
 
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const userId = user?.id ?? null;
+  const canUse = !!user?.id;
 
-  // Load churches (Supabase)
   const { data: churches = [], isLoading: loadingChurches } = useQuery<ChurchRow[]>({
-    queryKey: ["churches-list"],
-    enabled: !!userId,
+    queryKey: ["churches-list-for-setup"],
+    enabled: canUse,
     queryFn: async () => {
       const { data, error } = await supabase.from("churches").select("id,name").order("name", { ascending: true });
       if (error) throw error;
-      return (data as any[]) as ChurchRow[];
+      return (data as any[]) ?? [];
     },
   });
 
-  // Load my profile (Supabase)
   const { data: profile, isLoading: loadingProfile } = useQuery<ProfileRow | null>({
-    queryKey: ["my-profile-row", userId],
-    enabled: !!userId,
+    queryKey: ["setup-profile-row", user?.id ?? "anon"],
+    enabled: canUse,
     queryFn: async () => {
-      const { data, error } = await supabase.from("profiles").select("*").eq("id", userId!).maybeSingle();
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id,email,display_name,avatar_url,bio,faith_journey_stage,church_id,profile_completed_at")
+        .eq("id", user!.id)
+        .maybeSingle();
+
       if (error) throw error;
       return (data as any) ?? null;
     },
   });
 
-  // Initialize form from profile/user
+  // Prefill from Supabase + auth metadata
   useEffect(() => {
-    if (!userId) return;
+    if (!user) return;
+    if (!profile) {
+      // still allow prefill from auth metadata
+      const metaName =
+        (user.user_metadata as any)?.full_name ||
+        (user.user_metadata as any)?.name ||
+        "";
+      setDisplayName(metaName || user.email || "");
+      return;
+    }
 
-    const fallbackName =
-      (user?.user_metadata as any)?.full_name ||
-      (user?.user_metadata as any)?.name ||
-      user?.email ||
-      "";
+    setDisplayName(profile.display_name || user.email || "");
+    setBio(profile.bio || "");
+    setFaithStage(profile.faith_journey_stage || "growing");
+    setChurchId(profile.church_id || "");
+    setAvatarUrl(profile.avatar_url || "");
+  }, [user, profile]);
 
-    setDisplayName(profile?.display_name ?? fallbackName ?? "");
-    setBio(profile?.bio ?? "");
-    setFaithStage(profile?.faith_journey_stage ?? "growing");
-    setChurchId(profile?.church_id ?? "");
-    setAvatarUrl(profile?.avatar_url ?? "");
-  }, [userId, user?.email, user?.user_metadata, profile?.display_name, profile?.bio, profile?.faith_journey_stage, profile?.church_id, profile?.avatar_url]);
+  // If user is already complete, kick them to profile (or home)
+  const alreadyComplete = useMemo(() => !!profile?.profile_completed_at, [profile?.profile_completed_at]);
 
-  const canSubmit = useMemo(() => {
-    return !!userId && !!user?.email && displayName.trim().length > 0;
-  }, [userId, user?.email, displayName]);
+  useEffect(() => {
+    if (loading) return;
+    if (!user) return;
+    if (loadingProfile) return;
 
-  const saveProfileMutation = useMutation({
+    if (alreadyComplete) {
+      navigate(createPageUrl("Profile"), { replace: true });
+    }
+  }, [loading, user, loadingProfile, alreadyComplete, navigate]);
+
+  const saveMutation = useMutation({
     mutationFn: async () => {
-      if (!userId) throw new Error("Not authenticated");
+      if (!user) throw new Error("Not authenticated");
 
       const payload: Partial<ProfileRow> & { id: string } = {
-        id: userId,
-        email: user?.email ?? null, // keep stable for own user
+        id: user.id,
+        email: user.email ?? null,
         display_name: displayName.trim() || null,
         bio: bio.trim() || null,
         faith_journey_stage: faithStage || null,
         church_id: churchId ? String(churchId) : null,
-        avatar_url: avatarUrl ? String(avatarUrl) : null,
-        profile_completed_at: nowIso(),
+        avatar_url: avatarUrl || null,
+        profile_completed_at: new Date().toISOString(),
       };
 
-      const { data, error } = await supabase
-        .from("profiles")
-        .upsert(payload, { onConflict: "id" })
-        .select("*")
-        .single();
-
+      const { data, error } = await supabase.from("profiles").upsert(payload, { onConflict: "id" }).select("*").single();
       if (error) throw error;
-      return data as ProfileRow;
+      return data as any;
     },
     onSuccess: async () => {
-      // Make routing reliable:
-      // 1) refresh AuthProvider profile state
-      // 2) invalidate queries
-      // 3) hard navigate so we don't get a transient layout/guard mismatch
       await refreshProfile();
-      queryClient.invalidateQueries({ queryKey: ["my-profile-row"] });
-      queryClient.invalidateQueries({ queryKey: ["has-profile-complete"] });
-      window.location.replace(createPageUrl("Home"));
+      queryClient.invalidateQueries({ queryKey: ["setup-profile-row"] });
+      queryClient.invalidateQueries({ queryKey: ["profile-onboarding"] });
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
+      navigate(createPageUrl("Profile"), { replace: true });
     },
   });
 
   const handlePickAvatar = () => {
-    if (!userId) return;
+    if (!user) return;
     fileInputRef.current?.click();
   };
 
   const handleAvatarFile = async (file: File) => {
-    if (!userId) return;
+    if (!user) return;
 
     if (!file.type.startsWith("image/")) {
       alert("Please choose an image file.");
@@ -147,7 +158,7 @@ export default function SetupProfile() {
       setUploadingAvatar(true);
 
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const path = `users/${userId}/avatar_${Date.now()}.${ext}`;
+      const path = `users/${user.id}/avatar_${Date.now()}.${ext}`;
 
       const { error: upErr } = await supabase.storage.from("public-media").upload(path, file, {
         upsert: true,
@@ -166,15 +177,12 @@ export default function SetupProfile() {
     }
   };
 
-  // Auth gate
-  useEffect(() => {
-    if (loading) return;
-    if (!userId) {
-      window.location.replace(createPageUrl("GetStarted"));
-    }
-  }, [loading, userId]);
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    saveMutation.mutate();
+  };
 
-  if (loading || (!userId && !loading)) {
+  if (loading || (user && loadingProfile)) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <Loader2 className="h-10 w-10 animate-spin text-amber-600" />
@@ -182,7 +190,11 @@ export default function SetupProfile() {
     );
   }
 
-  const busy = loadingProfile || loadingChurches || saveProfileMutation.isPending || uploadingAvatar;
+  if (!user) {
+    // Not logged in: send to auth page
+    navigate("/auth", { replace: true });
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -194,60 +206,49 @@ export default function SetupProfile() {
             </div>
           </div>
           <h1 className="text-3xl font-serif font-bold mb-2">Complete Your Profile</h1>
-          <p className="text-amber-100">Tell us a bit about yourself and your faith journey.</p>
+          <p className="text-amber-100">Tell us a bit about yourself and your faith journey</p>
         </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-10">
         <GradientCard variant="warm" className="p-8">
-          <div className="flex items-center gap-4 mb-8">
-            <div className="relative">
-              <div className="h-16 w-16 rounded-2xl bg-white/70 border flex items-center justify-center overflow-hidden">
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {/* Avatar */}
+            <div className="flex items-center gap-4">
+              <div className="relative h-16 w-16 rounded-2xl bg-white/60 border overflow-hidden flex items-center justify-center">
                 {avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img src={avatarUrl} alt="Avatar" className="h-full w-full object-cover" />
                 ) : (
-                  <User className="h-7 w-7 text-slate-500" />
+                  <span className="text-slate-500 text-sm">Photo</span>
                 )}
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    e.target.value = "";
+                    if (!file) return;
+                    void handleAvatarFile(file);
+                  }}
+                />
               </div>
 
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0] ?? null;
-                  e.target.value = "";
-                  if (!file) return;
-                  void handleAvatarFile(file);
-                }}
-              />
-
-              <button
-                type="button"
-                onClick={handlePickAvatar}
-                disabled={uploadingAvatar}
-                className="absolute -bottom-2 -right-2 p-2 bg-amber-600 rounded-full text-white hover:bg-amber-700 transition-colors disabled:opacity-60"
-                title="Upload profile picture"
-              >
-                {uploadingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-              </button>
+              <div className="flex-1">
+                <Label>Profile Photo</Label>
+                <div className="mt-1 flex gap-2">
+                  <Button type="button" variant="outline" onClick={handlePickAvatar} disabled={uploadingAvatar} className="gap-2">
+                    {uploadingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                    Upload Photo
+                  </Button>
+                </div>
+                <p className="text-xs text-slate-500 mt-2">Max 5MB. PNG/JPG recommended.</p>
+              </div>
             </div>
 
-            <div className="flex-1">
-              <div className="text-sm text-slate-500">Signed in as</div>
-              <div className="font-medium text-slate-800">{user?.email}</div>
-            </div>
-          </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!canSubmit) return;
-              saveProfileMutation.mutate();
-            }}
-            className="space-y-6"
-          >
             <div>
               <Label>Display Name</Label>
               <Input
@@ -268,7 +269,7 @@ export default function SetupProfile() {
               />
             </div>
 
-            {/* Native select for clean name handling */}
+            {/* Native select (clean + predictable) */}
             <div>
               <Label htmlFor="faith_journey_stage">Faith Journey Stage</Label>
               <select
@@ -278,52 +279,50 @@ export default function SetupProfile() {
                 onChange={(e) => setFaithStage(e.target.value)}
                 className="mt-1 w-full h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40"
               >
-                <option value="seeking">Seeking</option>
-                <option value="new_believer">New Believer</option>
-                <option value="growing">Growing</option>
-                <option value="mature">Mature</option>
-                <option value="leader">Leader</option>
+                <option value="" disabled>
+                  Select stage…
+                </option>
+                {faithStages.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
               </select>
-              <p className="text-xs text-slate-500 mt-1">You can change this later.</p>
             </div>
 
             <div>
               <Label>Your Church (optional)</Label>
-              <Select value={churchId || ""} onValueChange={(v) => setChurchId(v)}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select your church" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">None</SelectItem>
-                  {churches.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <select
+                value={churchId}
+                onChange={(e) => setChurchId(e.target.value)}
+                className="mt-1 w-full h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                disabled={loadingChurches}
+              >
+                <option value="">None</option>
+                {churches.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
 
               <p className="text-xs text-slate-500 mt-1">
-                If you don’t see your church, you can create one from <span className="font-medium">Get Started</span>.
+                Can’t find your church? A church leader can create it, then you can select it here.
               </p>
             </div>
 
-            {saveProfileMutation.error ? (
-              <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">
-                {String((saveProfileMutation.error as any)?.message ?? saveProfileMutation.error)}
-              </div>
-            ) : null}
-
             <div className="flex justify-end gap-3 pt-4">
-              <Button
-                type="submit"
-                disabled={!canSubmit || busy}
-                className="bg-amber-600 hover:bg-amber-700 gap-2"
-              >
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              <Button type="submit" disabled={saveMutation.isPending} className="bg-amber-600 hover:bg-amber-700 gap-2">
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
                 Complete Setup
               </Button>
             </div>
+
+            {saveMutation.isError ? (
+              <div className="text-sm text-red-600">
+                {(saveMutation.error as any)?.message ?? "Failed to save profile."}
+              </div>
+            ) : null}
           </form>
         </GradientCard>
       </div>
