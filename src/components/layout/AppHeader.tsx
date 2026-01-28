@@ -4,10 +4,6 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/auth/AuthProvider";
 import UserAvatar from "@/components/shared/UserAvatar";
 
-// ✅ Minimal additions to reliably get Display Name:
-// Your header was only reading `useAuth().profile`, which (in your current project)
-// does not always include `display_name`. We fetch the Base44 UserProfile record
-// by email and use its `display_name` when present.
 import { base44 } from "@/api/base44Client";
 import { useQuery } from "@tanstack/react-query";
 
@@ -48,36 +44,36 @@ export default function AppHeader() {
 
   const displayEmail = profile?.email ?? user?.email ?? "";
 
-  // ✅ Fetch Base44 profile by email (this is where your display_name actually lives)
+  // Base44 profile by email (where display_name/avatar_url may still live in some areas)
   const { data: base44Profile } = useQuery({
     queryKey: ["header-profile", displayEmail],
     queryFn: async () => {
-      const email = displayEmail?.trim();
-      if (!email) return null;
-      const res = await base44.entities.UserProfile.filter({ user_email: email }, null, 1);
+      const e = displayEmail?.trim();
+      if (!e) return null;
+      const res = await base44.entities.UserProfile.filter({ user_email: e }, null, 1);
       return res?.[0] ?? null;
     },
     enabled: !!displayEmail,
     staleTime: 30_000,
   });
 
-  // IMPORTANT: Use display_name first, then full_name, and only fall back to email if nothing else exists.
   const displayName =
     base44Profile?.display_name?.trim() ||
-    profile?.display_name?.trim() ||
-    profile?.full_name?.trim() ||
+    (profile as any)?.display_name?.trim?.() ||
+    (profile as any)?.full_name?.trim?.() ||
     (user as any)?.user_metadata?.full_name?.trim?.() ||
     (user as any)?.user_metadata?.name?.trim?.() ||
     (user as any)?.user_metadata?.display_name?.trim?.() ||
     displayEmail ||
     "Account";
 
-  const avatarUrl = base44Profile?.avatar_url ?? profile?.avatar_url ?? undefined;
+  const avatarUrl = base44Profile?.avatar_url ?? (profile as any)?.avatar_url ?? undefined;
 
-  const openLogin = () => {
-    // IMPORTANT: does NOT route to get-started.
-    setAuthOpen(true);
-  };
+  // Brand assets (Option A: public/brand/*)
+  const BRAND_ICON = "/brand/icon.png";
+  const BRAND_WORDMARK = "/brand/logo-horizontal.png";
+
+  const openLogin = () => setAuthOpen(true);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,23 +93,16 @@ export default function AppHeader() {
           setBusy(false);
           return;
         }
-        console.log("Signing in with password...");
         await signInWithPassword({ email: eaddr, password });
-        console.log("Sign in successful, closing modal");
         setAuthOpen(false);
         setBusy(false);
-
-        // If your app already handles post-auth redirects elsewhere, this is harmless.
-        // If not, it helps you land back where you were.
         navigate(returnTo, { replace: true });
       } else {
-        console.log("Sending magic link...");
         await signInWithMagicLink({ email: eaddr });
         setMsg("Magic link sent. Check your email.");
         setBusy(false);
       }
     } catch (err: any) {
-      console.error("Sign in error:", err);
       setMsg(err?.message ?? "Something went wrong.");
       setBusy(false);
     }
@@ -125,10 +114,6 @@ export default function AppHeader() {
     try {
       await signOut();
       setMobileOpen(false);
-
-      // Optional: after sign-out, keep them on same route unless it hard-requires auth.
-      // If you prefer landing page, uncomment:
-      // navigate("/", { replace: true });
     } finally {
       setSigningOut(false);
     }
@@ -147,11 +132,28 @@ export default function AppHeader() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
         <div className="flex items-center justify-between h-16">
           {/* Brand */}
-          <Link className="flex items-center gap-2" to="/Home" onClick={() => setMobileOpen(false)}>
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
-              <span className="text-white font-bold">FH</span>
-            </div>
-            <span className="text-xl font-bold text-slate-800 hidden sm:block">FoundationHub</span>
+          <Link className="flex items-center gap-3" to="/Home" onClick={() => setMobileOpen(false)}>
+            <img
+              src={BRAND_ICON}
+              alt="Formation Initiative"
+              className="h-9 w-9 rounded-xl object-contain"
+              loading="eager"
+              onError={(e) => {
+                // if the image path is wrong, avoid a broken image icon taking over layout
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+              }}
+            />
+
+            {/* Wordmark on sm+ */}
+            <img
+              src={BRAND_WORDMARK}
+              alt="Formation Initiative"
+              className="h-7 hidden sm:block object-contain"
+              loading="eager"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+              }}
+            />
           </Link>
 
           {/* Desktop Nav */}
@@ -193,7 +195,6 @@ export default function AppHeader() {
           <div className="flex items-center gap-3">
             {user ? (
               <div className="hidden sm:flex items-center gap-3">
-                {/* Profile pill (avatar + display name) */}
                 <Link
                   to="/profile"
                   onClick={() => setMobileOpen(false)}
@@ -311,7 +312,7 @@ export default function AppHeader() {
         )}
       </div>
 
-      {/* Sign-in modal (simple + local, no extra shadcn deps) */}
+      {/* Sign-in modal */}
       {authOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40" onClick={() => !busy && setAuthOpen(false)} />
@@ -400,8 +401,6 @@ export default function AppHeader() {
                 {busy ? "Working..." : mode === "password" ? "Sign In" : "Send Magic Link"}
               </button>
             </form>
-
-            
           </div>
         </div>
       )}
