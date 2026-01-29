@@ -74,9 +74,9 @@ export default function App() {
               <Route path="/Home" element={<Navigate to="/" replace />} />
 
               {/* Common case-mismatch aliases for studies flow */}
-              <Route path="/Studies" element={<Navigate to="/studies" replace />} />
-              <Route path="/Start-Study" element={<Navigate to="/start-study" replace />} />
-              <Route path="/Study-Session" element={<Navigate to="/study-session" replace />} />
+              <Route path="/studies" element={<Studies />} />
+              <Route path="/start-study" element={<StartStudy />} />
+              <Route path="/study-session" element={<StudySession />} />
 
               <Route path="/admin" element={<AdminHub />} />
 
