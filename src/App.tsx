@@ -66,7 +66,18 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route element={<AppLayout />}>
+              {/* Canonical Home */}
               <Route path="/" element={<Home />} />
+
+              {/* ✅ Compatibility aliases for existing links/mappings */}
+              <Route path="/home" element={<Navigate to="/" replace />} />
+              <Route path="/Home" element={<Navigate to="/" replace />} />
+
+              {/* Common case-mismatch aliases for studies flow */}
+              <Route path="/Studies" element={<Navigate to="/studies" replace />} />
+              <Route path="/Start-Study" element={<Navigate to="/start-study" replace />} />
+              <Route path="/Study-Session" element={<Navigate to="/study-session" replace />} />
+
               <Route path="/admin" element={<AdminHub />} />
 
               <Route path="/login" element={<Login />} />
@@ -74,12 +85,20 @@ export default function App() {
               <Route path="/setup-profile" element={<SetupProfile />} />
               <Route path="/profile" element={<Profile />} />
 
-              <Route path="/church-admin/manage" element={<RequireAuth><ChurchManage /></RequireAuth>} />
+              <Route
+                path="/church-admin/manage"
+                element={
+                  <RequireAuth>
+                    <ChurchManage />
+                  </RequireAuth>
+                }
+              />
 
               <Route path="/studies" element={<Studies />} />
               <Route path="/study" element={<StudyDetail />} />
               <Route path="/start-study" element={<StartStudy />} />
               <Route path="/study-session" element={<StudySession />} />
+
               <Route path="/auth" element={<Auth />} />
 
               <Route path="/courses" element={<Courses />} />
@@ -136,7 +155,6 @@ export default function App() {
                 }
               />
 
-              {/* New: User Admin */}
               <Route
                 path="/admin/users"
                 element={
