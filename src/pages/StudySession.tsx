@@ -50,9 +50,11 @@ export default function StudySession() {
   const resources = useMemo(
     () => [
       { title: "BibleProject — Book Overviews", url: "https://bibleproject.com/explore/book-overviews/", subtitle: "Quick context + structure" },
-      { title: "StepBible", url: "https://www.stepbible.org/", subtitle: "Cross references, lexicon, notes" },
-      { title: "Blue Letter Bible", url: "https://www.blueletterbible.org/", subtitle: "Word study, original language tools" },
-      { title: "NET Bible", url: "https://netbible.org/", subtitle: "Translator notes" },
+      { title: "ESV Bible", url: "https://www.esv.org/", subtitle: "Clean passage text for copy/paste" },
+      { title: "NET Bible", url: "https://netbible.org/", subtitle: "Translator notes explain why wording matters" },
+      { title: "StepBible — Free study tools", url: "https://www.stepbible.org/", subtitle: "Cross references, lexicon, notes" },
+      { title: "Blue Letter Bible — Interlinear + Lexicon", url: "https://www.blueletterbible.org/", subtitle: "Word study, original language tools" },
+      { title: "GotQuestions (use discernment)", url: "https://www.gotquestions.org/", subtitle: "Fast topic summaries; compare with Scripture" },
     ],
     []
   );
@@ -86,6 +88,7 @@ export default function StudySession() {
         tools: [
           { label: "BibleGateway Genres", url: "https://www.biblegateway.com/learn/bible-101/about-the-bible/biblical-genres/" },
           { label: "BibleProject (How to Read)", url: "https://bibleproject.com/videos/collections/how-to-read-the-bible/" },
+          { label: "BibleProject — Book Overviews", url: "https://bibleproject.com/explore/book-overviews/" },
         ],
         kind: "select" as const,
       },
@@ -96,7 +99,12 @@ export default function StudySession() {
         subtitle: "Optional (for now). Paste the passage so you can mark observations right in context.",
         placeholder: "Paste the passage text here (optional)...",
         field: "scripture_text",
-        tools: [],
+        tools: [
+          { label: "NET API (plain text)", url: "https://labs.bible.org/api/?passage=John+3:16-17&formatting=plain&type=text" },
+          { label: "StepBible", url: "https://www.stepbible.org/" },
+          { label: "ESV Bible", url: "https://www.esv.org/" },
+          { label: "BibleGateway", url: "https://www.biblegateway.com/" },
+        ],
       },
     ];
 
@@ -129,7 +137,12 @@ export default function StudySession() {
         subtitle: `Answer “Who/why/what was happening?” so application stays accurate.`,
         placeholder: "What context matters here (author, setting, situation)...",
         field: "historical_context",
-        tools: [{ label: "BibleProject", url: "https://bibleproject.com/explore/book-overviews/" }],
+        tools: [
+         { label: "BibleProject", url: "https://bibleproject.com/explore/book-overviews/" },
+         { label: "StepBible", url: "https://www.stepbible.org/" },
+         { label: "Bible Odyssey", url: "https://www.bibleodyssey.org/" },
+         { label: "NET Bible", url: "https://netbible.org/" },
+        ],
       },
       {
         id: "observations",
@@ -138,7 +151,12 @@ export default function StudySession() {
         subtitle: "Observation = what the text says. Start with repeated terms, contrasts, cause/effect.",
         placeholder: "List key observations...",
         field: "observations",
-        tools: [{ label: "StepBible", url: "https://www.stepbible.org/" }],
+        tools: [
+          { label: "StepBible", url: "https://www.stepbible.org/" },
+          { label: "Blue Letter Bible", url: "https://www.blueletterbible.org/" },
+          { label: "NET Bible", url: "https://netbible.org/" },
+          { label: "OpenBible (Cross-refs)", url: "https://www.openbible.info/labs/cross-references/" },
+        ],
       },
       {
         id: "original_audience",
@@ -147,7 +165,10 @@ export default function StudySession() {
         subtitle: "Who heard/read this first? What was their situation?",
         placeholder: "Describe the original audience...",
         field: "original_audience",
-        tools: [],
+        tools: [
+          { label: "BibleProject", url: "https://bibleproject.com/explore/book-overviews/" },
+          { label: "StepBible", url: "https://www.stepbible.org/" },
+        ],
       },
       {
         id: "original_meaning",
@@ -156,7 +177,11 @@ export default function StudySession() {
         subtitle: "What would the original audience understand this to mean in their world?",
         placeholder: "Summarize the original meaning...",
         field: "original_meaning",
-        tools: [{ label: "NET Bible", url: "https://netbible.org/" }],
+        tools: [
+          { label: "BibleProject (Themes)", url: "https://bibleproject.com/explore/themes/" },
+          { label: "StepBible", url: "https://www.stepbible.org/" },
+          { label: "Blue Letter Bible", url: "https://www.blueletterbible.org/" },
+        ],
       },
       {
         id: "context_similarities",
@@ -165,7 +190,10 @@ export default function StudySession() {
         subtitle: "Bridge: what overlaps between their context and ours?",
         placeholder: "List similarities...",
         field: "context_similarities",
-        tools: [],
+        tools: [
+          { label: "BibleProject (Themes)", url: "https://bibleproject.com/explore/themes/" },
+          { label: "GotQuestions", url: "https://www.gotquestions.org/" },
+        ],
       },
       {
         id: "context_differences",
@@ -174,7 +202,10 @@ export default function StudySession() {
         subtitle: "Name differences so you don’t misapply.",
         placeholder: "List differences...",
         field: "context_differences",
-        tools: [],
+        tools: [
+          { label: "BibleProject (Covenants)", url: "https://bibleproject.com/videos/covenants/" },
+          { label: "StepBible", url: "https://www.stepbible.org/" },
+        ],
       },
       {
         id: "application",
