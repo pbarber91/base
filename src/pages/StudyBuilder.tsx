@@ -23,22 +23,29 @@ import {
   Loader2,
   X,
 } from "lucide-react";
-import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
+import { DragDropContext, Droppable, Draggable, type DropResult } from "@hello-pangea/dnd";
 import GradientCard from "@/components/ui/GradientCard";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { useAuth } from "@/auth/AuthProvider";
 
 type SectionType = "scripture_read" | "reflection" | "question" | "journal" | "resource";
 
+type Resource = {
+  title: string;
+  type: "article" | "video" | "book" | "podcast" | "tool" | "";
+  url: string;
+  description?: string;
+};
+
 type StudySection = {
   id: string;
   type: SectionType;
   title: string;
-  content?: string | null;
-  scripture_text?: string | null;
+  content?: string;
+  scripture_text?: string;
   prompts?: string[];
-  resources?: Array<{ title: string; type: string; url: string; description?: string }>;
+  resources?: Resource[];
 };
 
 type StudyRow = {
@@ -52,65 +59,43 @@ const SECTION_TYPES: Array<{
   type: SectionType;
   label: string;
   icon: any;
-  color: "amber" | "violet" | "blue" | "emerald" | "slate";
+  bgClass: string;
+  iconClass: string;
 }> = [
-  { type: "scripture_read", label: "Scripture Reading", icon: BookOpen, color: "amber" },
-  { type: "reflection", label: "Reflection", icon: Lightbulb, color: "violet" },
-  { type: "question", label: "Question", icon: MessageCircle, color: "blue" },
-  { type: "journal", label: "Journal Prompt", icon: PenLine, color: "emerald" },
-  { type: "resource", label: "Resources", icon: ExternalLink, color: "slate" },
+  { type: "scripture_read", label: "Scripture Reading", icon: BookOpen, bgClass: "bg-amber-100", iconClass: "text-amber-600" },
+  { type: "reflection", label: "Reflection", icon: Lightbulb, bgClass: "bg-violet-100", iconClass: "text-violet-600" },
+  { type: "question", label: "Question", icon: MessageCircle, bgClass: "bg-blue-100", iconClass: "text-blue-600" },
+  { type: "journal", label: "Journal Prompt", icon: PenLine, bgClass: "bg-emerald-100", iconClass: "text-emerald-600" },
+  { type: "resource", label: "Resources", icon: ExternalLink, bgClass: "bg-slate-100", iconClass: "text-slate-600" },
 ];
 
-function colorBgClass(c: string) {
-  switch (c) {
-    case "amber":
-      return "bg-amber-100";
-    case "violet":
-      return "bg-violet-100";
-    case "blue":
-      return "bg-blue-100";
-    case "emerald":
-      return "bg-emerald-100";
-    default:
-      return "bg-slate-100";
-  }
-}
-
-function colorTextClass(c: string) {
-  switch (c) {
-    case "amber":
-      return "text-amber-600";
-    case "violet":
-      return "text-violet-600";
-    case "blue":
-      return "text-blue-600";
-    case "emerald":
-      return "text-emerald-600";
-    default:
-      return "text-slate-600";
-  }
-}
+const newId = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 export default function StudyBuilder() {
   const { supabase, user, loading } = useAuth();
+  const navigate = useNavigate();
 
   const urlParams = new URLSearchParams(window.location.search);
   const studyId = urlParams.get("id");
 
-  const [editSection, setEditSection] = useState<StudySection | null>(null);
-  const [editIndex, setEditIndex] = useState<number | null>(null);
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [prompts, setPrompts] = useState<string[]>([]);
-  const [resources, setResources] = useState<Array<{ title: string; type: string; url: string; description?: string }>>(
-    []
-  );
-
   const queryClient = useQueryClient();
-  const canUse = !!user?.id && !loading;
+
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editIndex, setEditIndex] = useState<number | null>(null);
+
+  // dialog fields (controlled)
+  const [sectionType, setSectionType] = useState<SectionType>("scripture_read");
+  const [sectionTitle, setSectionTitle] = useState("");
+  const [sectionContent, setSectionContent] = useState("");
+  const [sectionScriptureText, setSectionScriptureText] = useState("");
+  const [prompts, setPrompts] = useState<string[]>([""]);
+  const [resources, setResources] = useState<Resource[]>([{ title: "", type: "", url: "", description: "" }]);
+
+  const canUse = !!studyId && !!user?.id;
 
   const { data: study, isLoading } = useQuery<StudyRow | null>({
-    queryKey: ["study-builder", studyId ?? "no-id"],
-    enabled: canUse && !!studyId,
+    queryKey: ["study-builder", studyId ?? "none"],
+    enabled: !!studyId,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("studies")
@@ -119,50 +104,57 @@ export default function StudyBuilder() {
         .maybeSingle();
 
       if (error) throw error;
+      if (!data) return null;
 
-      const row = (data as any) ?? null;
-      if (!row) return null;
-
+      const sections = Array.isArray((data as any).sections) ? (data as any).sections : [];
       return {
-        id: row.id,
-        title: row.title,
-        scripture_reference: row.scripture_reference ?? null,
-        sections: Array.isArray(row.sections) ? row.sections : [],
+        id: (data as any).id,
+        title: (data as any).title,
+        scripture_reference: (data as any).scripture_reference ?? null,
+        sections,
       } as StudyRow;
     },
   });
 
-  const sections = useMemo(() => study?.sections || [], [study?.sections]);
+  const sections: StudySection[] = useMemo(() => {
+    const s = (study?.sections ?? []) as any[];
+    return s
+      .map((x) => ({
+        id: String(x?.id ?? newId()),
+        type: (x?.type ?? "scripture_read") as SectionType,
+        title: String(x?.title ?? ""),
+        content: x?.content ?? "",
+        scripture_text: x?.scripture_text ?? "",
+        prompts: Array.isArray(x?.prompts) ? x.prompts : [],
+        resources: Array.isArray(x?.resources) ? x.resources : [],
+      }))
+      .filter((x) => x.title || x.content || x.scripture_text || (x.prompts?.length ?? 0) > 0 || (x.resources?.length ?? 0) > 0);
+  }, [study?.sections]);
 
   const saveMutation = useMutation({
     mutationFn: async (nextSections: StudySection[]) => {
       if (!studyId) throw new Error("Missing study id");
-      const { data, error } = await supabase
-        .from("studies")
-        .update({ sections: nextSections })
-        .eq("id", studyId)
-        .select("id")
-        .single();
+      const { error } = await supabase.from("studies").update({ sections: nextSections }).eq("id", studyId);
       if (error) throw error;
-      return data;
+      return true;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["study-builder"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["study-builder"] });
       setIsDialogOpen(false);
-      setEditSection(null);
       setEditIndex(null);
     },
   });
 
   const openEditDialog = (section: StudySection | null = null, index: number | null = null) => {
-    setEditSection(section);
     setEditIndex(index);
-    setPrompts(section?.prompts?.length ? section.prompts : [""]);
-    setResources(
-      section?.resources?.length
-        ? section.resources
-        : [{ title: "", type: "", url: "", description: "" }]
-    );
+
+    setSectionType(section?.type ?? "scripture_read");
+    setSectionTitle(section?.title ?? "");
+    setSectionContent(section?.content ?? "");
+    setSectionScriptureText(section?.scripture_text ?? "");
+    setPrompts(section?.prompts?.length ? [...section.prompts] : [""]);
+    setResources(section?.resources?.length ? [...(section.resources as Resource[])] : [{ title: "", type: "", url: "", description: "" }]);
+
     setIsDialogOpen(true);
   };
 
@@ -176,67 +168,84 @@ export default function StudyBuilder() {
     saveMutation.mutate(items);
   };
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
+  const upsertSection = () => {
+    const cleanedPrompts = prompts.map((p) => p.trim()).filter(Boolean);
 
-    const newSection: StudySection = {
-      id: editSection?.id || globalThis.crypto?.randomUUID?.() || Date.now().toString(),
-      type: (formData.get("type")?.toString() as SectionType) || "scripture_read",
-      title: (formData.get("title")?.toString() ?? "").trim(),
-      content: (formData.get("content")?.toString() ?? "").trim() || null,
-      scripture_text: (formData.get("scripture_text")?.toString() ?? "").trim() || null,
-      prompts: prompts.map((p) => p.trim()).filter(Boolean),
-      resources: resources
-        .map((r) => ({
-          title: (r.title ?? "").trim(),
-          type: (r.type ?? "").trim(),
-          url: (r.url ?? "").trim(),
-          description: (r.description ?? "").trim(),
-        }))
-        .filter((r) => r.title && r.url),
+    const cleanedResources = resources
+      .map((r) => ({
+        title: (r.title ?? "").trim(),
+        type: (r.type ?? "") as Resource["type"],
+        url: (r.url ?? "").trim(),
+        description: (r.description ?? "").trim(),
+      }))
+      .filter((r) => r.title && r.url);
+
+    const next: StudySection = {
+      id: editIndex !== null ? sections[editIndex]?.id ?? newId() : newId(),
+      type: sectionType,
+      title: sectionTitle.trim(),
+      content: sectionContent.trim(),
+      scripture_text: sectionScriptureText.trim(),
+      prompts: cleanedPrompts,
+      resources: cleanedResources,
     };
 
-    const next = [...sections];
-    if (editIndex !== null && editIndex !== undefined) {
-      next[editIndex] = newSection;
-    } else {
-      next.push(newSection);
+    if (!next.title) {
+      // Keep it simple; you can replace with toast
+      alert("Section title is required.");
+      return;
     }
 
-    saveMutation.mutate(next);
+    const nextSections = [...sections];
+    if (editIndex !== null) nextSections[editIndex] = next;
+    else nextSections.push(next);
+
+    saveMutation.mutate(nextSections);
   };
 
   const deleteSection = (index: number) => {
-    const next = sections.filter((_, i) => i !== index);
-    saveMutation.mutate(next);
+    const nextSections = sections.filter((_, i) => i !== index);
+    saveMutation.mutate(nextSections);
   };
 
   const addPrompt = () => setPrompts((p) => [...p, ""]);
-  const updatePrompt = (index: number, value: string) => {
-    setPrompts((prev) => {
-      const next = [...prev];
+  const updatePrompt = (index: number, value: string) =>
+    setPrompts((p) => {
+      const next = [...p];
       next[index] = value;
       return next;
     });
-  };
   const removePrompt = (index: number) => setPrompts((p) => p.filter((_, i) => i !== index));
 
   const addResource = () =>
     setResources((r) => [...r, { title: "", type: "", url: "", description: "" }]);
-  const updateResource = (index: number, field: string, value: string) => {
-    setResources((prev) => {
-      const next = [...prev];
-      next[index] = { ...next[index], [field]: value };
+
+  const updateResource = (index: number, field: keyof Resource, value: string) =>
+    setResources((r) => {
+      const next = [...r];
+      next[index] = { ...next[index], [field]: value } as Resource;
       return next;
     });
-  };
+
   const removeResource = (index: number) => setResources((r) => r.filter((_, i) => i !== index));
 
   if (loading || isLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <Loader2 className="h-10 w-10 animate-spin text-amber-600" />
+      </div>
+    );
+  }
+
+  if (!studyId) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl font-semibold text-slate-800 mb-2">Missing study id</h2>
+          <Link to={createPageUrl("AdminStudies")}>
+            <Button>Back to Studies</Button>
+          </Link>
+        </div>
       </div>
     );
   }
@@ -254,6 +263,12 @@ export default function StudyBuilder() {
     );
   }
 
+  // If not logged in, kick to auth (avoid blank states)
+  if (!user) {
+    navigate("/auth", { replace: true });
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header */}
@@ -268,10 +283,13 @@ export default function StudyBuilder() {
               </Link>
               <div>
                 <h1 className="font-semibold text-slate-800">{study.title}</h1>
-                <p className="text-sm text-slate-500">{study.scripture_reference} • Section Builder</p>
+                <p className="text-sm text-slate-500">
+                  {study.scripture_reference ?? ""} • Section Builder
+                </p>
               </div>
             </div>
-            <Button onClick={() => openEditDialog()} className="bg-amber-600 hover:bg-amber-700 gap-2">
+
+            <Button onClick={() => openEditDialog(null, null)} className="bg-amber-600 hover:bg-amber-700 gap-2">
               <Plus className="h-4 w-4" />
               Add Section
             </Button>
@@ -287,25 +305,23 @@ export default function StudyBuilder() {
               {(provided) => (
                 <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-3">
                   {sections.map((section, index) => {
-                    const typeConfig = SECTION_TYPES.find((t) => t.type === section.type) || SECTION_TYPES[0];
+                    const typeConfig = SECTION_TYPES.find((t) => t.type === section.type) ?? SECTION_TYPES[0];
                     const Icon = typeConfig.icon;
 
                     return (
                       <Draggable key={section.id} draggableId={section.id} index={index}>
                         {(provided, snapshot) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                            className={`${snapshot.isDragging ? "shadow-lg" : ""}`}
-                          >
+                          <div ref={provided.innerRef} {...provided.draggableProps} className={snapshot.isDragging ? "shadow-lg" : ""}>
                             <GradientCard variant="warm" className="p-5">
                               <div className="flex items-center gap-4">
                                 <div {...provided.dragHandleProps} className="cursor-grab">
                                   <GripVertical className="h-5 w-5 text-slate-400" />
                                 </div>
-                                <div className={`w-10 h-10 rounded-xl ${colorBgClass(typeConfig.color)} flex items-center justify-center`}>
-                                  <Icon className={`h-5 w-5 ${colorTextClass(typeConfig.color)}`} />
+
+                                <div className={`w-10 h-10 rounded-xl ${typeConfig.bgClass} flex items-center justify-center`}>
+                                  <Icon className={`h-5 w-5 ${typeConfig.iconClass}`} />
                                 </div>
+
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2 mb-1">
                                     <Badge variant="outline">{typeConfig.label}</Badge>
@@ -315,6 +331,7 @@ export default function StudyBuilder() {
                                     <p className="text-sm text-slate-500 line-clamp-1 mt-1">{section.content}</p>
                                   ) : null}
                                 </div>
+
                                 <div className="flex items-center gap-2">
                                   <Button variant="ghost" size="icon" onClick={() => openEditDialog(section, index)}>
                                     <Edit2 className="h-4 w-4" />
@@ -347,7 +364,7 @@ export default function StudyBuilder() {
             </div>
             <h3 className="text-xl font-semibold text-slate-800 mb-2">No sections yet</h3>
             <p className="text-slate-500 mb-6">Start building your study by adding sections</p>
-            <Button onClick={() => openEditDialog()} className="bg-amber-600 hover:bg-amber-700 gap-2">
+            <Button onClick={() => openEditDialog(null, null)} className="bg-amber-600 hover:bg-amber-700 gap-2">
               <Plus className="h-4 w-4" />
               Add First Section
             </Button>
@@ -359,15 +376,21 @@ export default function StudyBuilder() {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editSection ? "Edit Section" : "Add New Section"}</DialogTitle>
+            <DialogTitle>{editIndex !== null ? "Edit Section" : "Add New Section"}</DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              upsertSection();
+            }}
+            className="space-y-6"
+          >
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>Section Type</Label>
-                <Select name="type" defaultValue={editSection?.type || "scripture_read"}>
-                  <SelectTrigger>
+                <Select value={sectionType} onValueChange={(v) => setSectionType(v as SectionType)}>
+                  <SelectTrigger className="mt-1">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -385,27 +408,33 @@ export default function StudyBuilder() {
 
               <div>
                 <Label>Section Title</Label>
-                <Input name="title" defaultValue={editSection?.title ?? ""} required placeholder="e.g., Read the Passage" />
+                <Input
+                  value={sectionTitle}
+                  onChange={(e) => setSectionTitle(e.target.value)}
+                  required
+                  placeholder="e.g., Read the Passage"
+                  className="mt-1"
+                />
               </div>
             </div>
 
             <div>
               <Label>Content / Instructions</Label>
               <Textarea
-                name="content"
-                defaultValue={editSection?.content ?? ""}
+                value={sectionContent}
+                onChange={(e) => setSectionContent(e.target.value)}
                 placeholder="Instructions or content for this section..."
-                className="min-h-[100px]"
+                className="min-h-[100px] mt-1"
               />
             </div>
 
             <div>
               <Label>Scripture Text (optional)</Label>
               <Textarea
-                name="scripture_text"
-                defaultValue={editSection?.scripture_text ?? ""}
+                value={sectionScriptureText}
+                onChange={(e) => setSectionScriptureText(e.target.value)}
                 placeholder="Paste the scripture text here..."
-                className="min-h-[100px]"
+                className="min-h-[100px] mt-1"
               />
             </div>
 
@@ -418,6 +447,7 @@ export default function StudyBuilder() {
                   Add Prompt
                 </Button>
               </div>
+
               <div className="space-y-2">
                 {prompts.map((prompt, index) => (
                   <div key={index} className="flex gap-2">
@@ -443,12 +473,19 @@ export default function StudyBuilder() {
                   Add Resource
                 </Button>
               </div>
+
               <div className="space-y-4">
                 {resources.map((resource, index) => (
                   <div key={index} className="p-4 bg-slate-50 rounded-lg space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium text-slate-700">Resource {index + 1}</span>
-                      <Button type="button" variant="ghost" size="icon" onClick={() => removeResource(index)} className="h-6 w-6">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeResource(index)}
+                        className="h-6 w-6"
+                      >
                         <X className="h-3 w-3" />
                       </Button>
                     </div>
@@ -459,7 +496,11 @@ export default function StudyBuilder() {
                         onChange={(e) => updateResource(index, "title", e.target.value)}
                         placeholder="Resource title"
                       />
-                      <Select value={resource.type} onValueChange={(v) => updateResource(index, "type", v)}>
+
+                      <Select
+                        value={resource.type}
+                        onValueChange={(v) => updateResource(index, "type", v)}
+                      >
                         <SelectTrigger>
                           <SelectValue placeholder="Type" />
                         </SelectTrigger>
@@ -492,6 +533,7 @@ export default function StudyBuilder() {
               <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
                 Cancel
               </Button>
+
               <Button type="submit" disabled={saveMutation.isPending} className="bg-amber-600 hover:bg-amber-700 gap-2">
                 {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
                 <Save className="h-4 w-4" />
@@ -501,7 +543,7 @@ export default function StudyBuilder() {
 
             {saveMutation.isError ? (
               <div className="text-sm text-red-600">
-                {(saveMutation.error as any)?.message ?? "Failed to save sections."}
+                {(saveMutation.error as any)?.message ?? "Failed to save section."}
               </div>
             ) : null}
           </form>
