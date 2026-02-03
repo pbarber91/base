@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+// src/pages/AdminStudies.tsx
+import React, { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,26 +12,24 @@ import {
   Plus,
   Edit2,
   Trash2,
-  Eye,
-  EyeOff,
+  ChevronRight,
   BookOpen,
   MoreVertical,
   Loader2,
   Users,
   Settings,
   PlayCircle,
+  Church,
+  User as UserIcon,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import GradientCard from "@/components/ui/GradientCard";
 import DifficultyBadge from "@/components/ui/DifficultyBadge";
 import EmptyState from "@/components/shared/EmptyState";
+import { Link, useNavigate } from "react-router-dom";
+import { createPageUrl } from "@/utils";
 import { motion } from "framer-motion";
 import { useAuth } from "@/auth/AuthProvider";
-
-type ProfileRow = {
-  id: string;
-  church_id: string | null;
-};
 
 type StudyRow = {
   id: string;
@@ -45,235 +44,197 @@ type StudyRow = {
   cover_image_url: string | null;
   is_published: boolean;
   created_by: string;
-  participants_count: number;
   sections: any[];
+  participants_count: number;
   created_at: string;
+  updated_at: string;
 };
 
-type StudyFormPayload = {
-  title: string;
-  description: string | null;
+type StudySessionRow = {
+  id: string;
+  created_by: string;
+  church_id: string | null;
+  group_id: string | null;
+  study_id: string | null;
+  title: string | null;
   scripture_reference: string | null;
   book: string | null;
   difficulty: "beginner" | "intermediate" | "advanced";
-  estimated_minutes: number | null;
-  cover_image_url: string | null;
-  tags: string[];
-  is_published?: boolean;
-  church_id?: string | null;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  reference: string | null;
+  track: "beginner" | "intermediate" | "advanced" | null;
+  pray: string | null;
+  scripture_text: string | null;
+};
+
+type CreateSessionPayload = {
+  scope: "personal" | "church";
+  study_id: string;
+  title: string;
+  status: "in_progress" | "completed";
 };
 
 export default function AdminStudies() {
-  const { user, supabase, loading } = useAuth();
+  const { user, supabase, loading, profile } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [editStudy, setEditStudy] = useState<StudyRow | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editSession, setEditSession] = useState<StudySessionRow | null>(null);
 
-  const canUse = !!user?.id;
+  const [scope, setScope] = useState<"personal" | "church">("personal");
+  const [selectedStudyId, setSelectedStudyId] = useState<string>("");
+  const [customTitle, setCustomTitle] = useState<string>("");
+  const [status, setStatus] = useState<"in_progress" | "completed">("in_progress");
 
-  const { data: profile, isLoading: loadingProfile } = useQuery<ProfileRow | null>({
-    queryKey: ["admin-studies-profile", user?.id ?? "anon"],
+  const canUse = !!user?.id && !!supabase;
+
+  // Published studies that can be used as templates.
+  // - Global studies: church_id is null
+  // - Church studies: church_id matches profile.church_id (optional)
+  const { data: availableStudies = [], isLoading: loadingStudies } = useQuery<StudyRow[]>({
+    queryKey: ["available-studies", profile?.church_id ?? "no-church"],
     enabled: canUse,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id,church_id")
-        .eq("id", user!.id)
-        .maybeSingle();
+      let q = supabase
+        .from("studies")
+        .select(
+          "id,church_id,title,description,scripture_reference,book,difficulty,estimated_minutes,tags,cover_image_url,is_published,created_by,sections,participants_count,created_at,updated_at"
+        )
+        .eq("is_published", true)
+        .order("updated_at", { ascending: false });
+
+      // Allow both global + church studies (if user has a church selected).
+      if (profile?.church_id) {
+        q = q.or(`church_id.is.null,church_id.eq.${profile.church_id}`);
+      } else {
+        q = q.is("church_id", null);
+      }
+
+      const { data, error } = await q;
       if (error) throw error;
-      return (data as any) ?? null;
+      return (data as any[]) as StudyRow[];
     },
   });
 
-  /**
-   * WHAT WE SHOW:
-   * - Published studies (global + church-specific)
-   * - Plus any studies created_by the current user (drafts included)
-   *
-   * If you want ONLY published studies for regular users and ONLY church-owned studies for church admins,
-   * adjust this filter accordingly.
-   */
-  const { data: studies = [], isLoading } = useQuery<StudyRow[]>({
-    queryKey: ["admin-studies", user?.id ?? "anon", profile?.church_id ?? "none"],
-    enabled: canUse && !loadingProfile,
+  // Sessions list
+  const { data: sessions = [], isLoading: loadingSessions } = useQuery<StudySessionRow[]>({
+    queryKey: ["study-sessions", scope, user?.id ?? "anon", profile?.church_id ?? "no-church"],
+    enabled: canUse,
     queryFn: async () => {
-      // Pull:
-      // 1) published global (church_id null)
-      // 2) published for my church (church_id = profile.church_id)
-      // 3) any created_by me (so I can manage my drafts)
-      const churchId = profile?.church_id ?? null;
-
-      // Supabase OR logic:
-      // is_published = true AND (church_id is null OR church_id = myChurch)
-      // OR created_by = me
-      const base = supabase
-        .from("studies")
+      let q = supabase
+        .from("study_sessions")
         .select(
-          "id,church_id,title,description,scripture_reference,book,difficulty,estimated_minutes,tags,cover_image_url,is_published,created_by,participants_count,sections,created_at"
+          "id,created_by,church_id,group_id,study_id,title,scripture_reference,book,difficulty,status,started_at,completed_at,created_at,updated_at,reference,track,pray,scripture_text"
         )
         .order("created_at", { ascending: false });
 
-      const orParts: string[] = [];
-      // created_by = me
-      orParts.push(`created_by.eq.${user!.id}`);
-
-      // published global
-      orParts.push(`and(is_published.eq.true,church_id.is.null)`);
-
-      // published for my church
-      if (churchId) {
-        orParts.push(`and(is_published.eq.true,church_id.eq.${churchId})`);
+      if (scope === "church") {
+        if (!profile?.church_id) return [];
+        q = q.eq("church_id", profile.church_id);
+      } else {
+        q = q.eq("created_by", user!.id);
       }
 
-      const { data, error } = await base.or(orParts.join(","));
+      const { data, error } = await q;
       if (error) throw error;
-
-      return ((data as any[]) ?? []) as StudyRow[];
+      return (data as any[]) as StudySessionRow[];
     },
   });
 
-  const myChurchId = profile?.church_id ?? null;
+  const studyById = useMemo(() => {
+    const map = new Map<string, StudyRow>();
+    for (const s of availableStudies) map.set(s.id, s);
+    return map;
+  }, [availableStudies]);
 
-  const saveMutation = useMutation<any, unknown, StudyFormPayload>({
-    mutationFn: async (payload) => {
-      if (!user) throw new Error("Not authenticated");
-
-      // If you DO NOT want anyone creating studies here, you can delete this mutation entirely
-      // and remove the UI that calls it.
-      if (editStudy?.id) {
-        const { data, error } = await supabase
-          .from("studies")
-          .update({
-            ...payload,
-            // keep existing sections/participants_count as-is
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", editStudy.id)
-          .select("*")
-          .single();
-        if (error) throw error;
-        return data;
-      }
-
-      const { data, error } = await supabase
-        .from("studies")
-        .insert({
-          ...payload,
-          created_by: user.id,
-          church_id: payload.church_id ?? null,
-          sections: [], // still in schema, but NOT used as course builder
-          participants_count: 0,
-        })
-        .select("*")
-        .single();
-
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin-studies"] });
-      setIsDialogOpen(false);
-      setEditStudy(null);
-    },
-  });
-
-  const deleteMutation = useMutation<any, unknown, string>({
-    mutationFn: async (id) => {
-      const { error } = await supabase.from("studies").delete().eq("id", id);
-      if (error) throw error;
-      return true;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin-studies"] }),
-  });
-
-  const togglePublishMutation = useMutation<any, unknown, StudyRow>({
-    mutationFn: async (study) => {
-      const { data, error } = await supabase
-        .from("studies")
-        .update({ is_published: !study.is_published, updated_at: new Date().toISOString() })
-        .eq("id", study.id)
-        .select("*")
-        .single();
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin-studies"] }),
-  });
-
-  /**
-   * THE IMPORTANT PART:
-   * "Start Together" creates a study_sessions row that points at the study.
-   * This is how church/group “walk through together” happens.
-   */
-  const startTogetherMutation = useMutation<any, unknown, StudyRow>({
-    mutationFn: async (study) => {
-      if (!user) throw new Error("Not authenticated");
-
-      const { data, error } = await supabase
-        .from("study_sessions")
-        .insert({
-          created_by: user.id,
-          church_id: myChurchId, // null if user has no church selected
-          group_id: null, // later: allow choosing a group
-          study_id: study.id,
-          title: study.title,
-          scripture_reference: study.scripture_reference,
-          book: study.book,
-          difficulty: study.difficulty,
-          status: "in_progress",
-          started_at: new Date().toISOString(),
-        })
-        .select("id")
-        .single();
-
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: (data) => {
-      // We don't know your session detail route, so keep this safe.
-      alert(`Study session started.\nSession ID: ${data?.id}`);
-      queryClient.invalidateQueries({ queryKey: ["admin-studies"] });
-    },
-  });
-
-  const openEditDialog = (study: StudyRow | null = null) => {
-    setEditStudy(study);
+  const openCreate = () => {
+    setEditSession(null);
+    setScope(profile?.church_id ? "church" : "personal");
+    setSelectedStudyId(availableStudies[0]?.id ?? "");
+    setCustomTitle("");
+    setStatus("in_progress");
     setIsDialogOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-
-    const getStr = (key: string) => (formData.get(key)?.toString() ?? "").trim();
-
-    const tags = getStr("tags")
-      ? getStr("tags")
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean)
-      : [];
-
-    const payload: StudyFormPayload = {
-      title: getStr("title"),
-      description: getStr("description") || null,
-      scripture_reference: getStr("scripture_reference") || null,
-      book: getStr("book") || null,
-      difficulty: (getStr("difficulty") as any) || "beginner",
-      estimated_minutes: Number.parseInt(getStr("estimated_minutes") || "20", 10) || 20,
-      cover_image_url: getStr("cover_image_url") || null,
-      tags,
-      // If you want studies created here to default to the user's church when they have one:
-      church_id: myChurchId,
-    };
-
-    saveMutation.mutate(payload);
+  const openEdit = (s: StudySessionRow) => {
+    setEditSession(s);
+    setScope(s.church_id ? "church" : "personal");
+    setSelectedStudyId(s.study_id ?? "");
+    setCustomTitle(s.title ?? "");
+    setStatus((s.status as any) === "completed" ? "completed" : "in_progress");
+    setIsDialogOpen(true);
   };
 
-  const visibleStudies = useMemo(() => studies, [studies]);
+  const createOrUpdateMutation = useMutation({
+    mutationFn: async (payload: CreateSessionPayload) => {
+      if (!user) throw new Error("Not authenticated");
 
-  if (loading || loadingProfile) {
+      const baseStudy = studyById.get(payload.study_id);
+      if (!baseStudy) throw new Error("Please select a study.");
+
+      const isChurch = payload.scope === "church";
+      const churchId = isChurch ? (profile?.church_id ?? null) : null;
+
+      const sessionTitle = payload.title.trim() || baseStudy.title;
+
+      const record: Partial<StudySessionRow> & { created_by: string } = {
+        created_by: user.id,
+        church_id: churchId,
+        group_id: null,
+        study_id: baseStudy.id,
+        title: sessionTitle,
+        scripture_reference: baseStudy.scripture_reference ?? null,
+        book: baseStudy.book ?? null,
+        difficulty: baseStudy.difficulty,
+        track: baseStudy.difficulty,
+        status: payload.status,
+      };
+
+      if (editSession?.id) {
+        const { data, error } = await supabase
+          .from("study_sessions")
+          .update(record)
+          .eq("id", editSession.id)
+          .select("*")
+          .single();
+        if (error) throw error;
+        return data as any as StudySessionRow;
+      }
+
+      const { data, error } = await supabase.from("study_sessions").insert(record).select("*").single();
+      if (error) throw error;
+      return data as any as StudySessionRow;
+    },
+    onSuccess: async (createdOrUpdated) => {
+      await queryClient.invalidateQueries({ queryKey: ["study-sessions"] });
+      setIsDialogOpen(false);
+      setEditSession(null);
+
+      if (createdOrUpdated?.id) {
+        navigate(createPageUrl("StudyBuilder") + `?id=${createdOrUpdated.id}`);
+      }
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("study_sessions").delete().eq("id", id);
+      if (error) throw error;
+      return true;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["study-sessions"] });
+    },
+  });
+
+  const canShowChurch = !!profile?.church_id;
+
+  if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <Loader2 className="h-10 w-10 animate-spin text-amber-600" />
@@ -286,11 +247,14 @@ export default function AdminStudies() {
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="text-center">
           <h2 className="text-xl font-semibold text-slate-800 mb-2">Sign in required</h2>
-          <Button onClick={() => (window.location.href = "/auth")}>Sign In</Button>
+          <Button onClick={() => navigate("/auth")}>Sign In</Button>
         </div>
       </div>
     );
   }
+
+  const isLoading = loadingStudies || loadingSessions;
+  const headerTitle = scope === "church" ? "Church Study Sessions" : "My Study Sessions";
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -302,19 +266,43 @@ export default function AdminStudies() {
                 <div className="p-2 bg-white/20 rounded-xl">
                   <Settings className="h-6 w-6" />
                 </div>
-                <span className="text-amber-100 font-medium">Study Management</span>
+                <span className="text-amber-100 font-medium">Session Management</span>
               </div>
-              <h1 className="text-3xl font-serif font-bold mb-2">Studies</h1>
+              <h1 className="text-3xl font-serif font-bold mb-2">{headerTitle}</h1>
               <p className="text-amber-100">
-                Studies stay the same everywhere — start a session when you want to go through one together.
+                Sessions let people walk through the same study together—without changing the study content.
               </p>
             </div>
 
-            {/* Optional: If you don't want admins creating studies, remove this button + dialog entirely */}
-            <Button onClick={() => openEditDialog()} size="lg" className="bg-white text-amber-700 hover:bg-amber-50 gap-2">
-              <Plus className="h-5 w-5" />
-              Create Study
-            </Button>
+            <div className="flex items-center gap-3">
+              {canShowChurch ? (
+                <div className="flex items-center gap-2 bg-white/15 rounded-xl p-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className={`text-white hover:bg-white/15 ${scope === "personal" ? "bg-white/15" : ""}`}
+                    onClick={() => setScope("personal")}
+                  >
+                    <UserIcon className="h-4 w-4 mr-2" />
+                    Personal
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className={`text-white hover:bg-white/15 ${scope === "church" ? "bg-white/15" : ""}`}
+                    onClick={() => setScope("church")}
+                  >
+                    <Church className="h-4 w-4 mr-2" />
+                    Church
+                  </Button>
+                </div>
+              ) : null}
+
+              <Button onClick={openCreate} size="lg" className="bg-white text-amber-700 hover:bg-amber-50 gap-2">
+                <Plus className="h-5 w-5" />
+                New Session
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -324,202 +312,211 @@ export default function AdminStudies() {
           <div className="flex justify-center py-20">
             <Loader2 className="h-10 w-10 animate-spin text-amber-600" />
           </div>
-        ) : visibleStudies.length > 0 ? (
+        ) : sessions.length > 0 ? (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {visibleStudies.map((study, i) => (
-              <motion.div
-                key={study.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-              >
-                <GradientCard variant="warm" className="overflow-hidden">
-                  {study.cover_image_url ? (
-                    <div className="h-32 overflow-hidden">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={study.cover_image_url} alt="" className="w-full h-full object-cover" />
-                    </div>
-                  ) : null}
+            {sessions.map((s, i) => {
+              const baseStudy = s.study_id ? studyById.get(s.study_id) : undefined;
+              const cover = baseStudy?.cover_image_url ?? null;
 
-                  <div className="p-5">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-semibold text-slate-800 line-clamp-1">{study.title}</h3>
-                        <p className="text-sm text-amber-700">{study.scripture_reference ?? ""}</p>
+              return (
+                <motion.div
+                  key={s.id}
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                >
+                  <GradientCard variant="warm" className="overflow-hidden">
+                    {cover ? (
+                      <div className="h-32 overflow-hidden">
+                        <img src={cover} alt="" className="w-full h-full object-cover" />
+                      </div>
+                    ) : null}
+
+                    <div className="p-5">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold text-slate-800 line-clamp-1">{s.title || baseStudy?.title || "Session"}</h3>
+                          <p className="text-sm text-amber-700 line-clamp-1">
+                            {s.scripture_reference || baseStudy?.scripture_reference || "—"}
+                          </p>
+                        </div>
+
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8">
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => openEdit(s)}>
+                              <Edit2 className="h-4 w-4 mr-2" />
+                              Edit Session
+                            </DropdownMenuItem>
+                            <DropdownMenuItem asChild>
+                              <Link to={createPageUrl("StudyBuilder") + `?id=${s.id}`}>
+                                <ChevronRight className="h-4 w-4 mr-2" />
+                                Open Session
+                              </Link>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => deleteMutation.mutate(s.id)}
+                              className="text-red-600"
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
 
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreVertical className="h-4 w-4" />
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        <Badge variant={s.church_id ? "default" : "secondary"}>{s.church_id ? "Church" : "Personal"}</Badge>
+                        <Badge variant={s.status === "completed" ? "default" : "secondary"}>
+                          {s.status === "completed" ? "Completed" : "In Progress"}
+                        </Badge>
+                        <DifficultyBadge difficulty={s.difficulty} />
+                      </div>
+
+                      <div className="flex items-center gap-4 text-sm text-slate-500">
+                        <span className="inline-flex items-center gap-1">
+                          <PlayCircle className="h-4 w-4" />
+                          {new Date(s.started_at).toLocaleDateString()}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Users className="h-4 w-4" />
+                          {/* We don’t have a members table here; participant count can be derived later. */}
+                          —
+                        </span>
+                      </div>
+
+                      <div className="mt-4 pt-4 border-t border-slate-100">
+                        <Link to={createPageUrl("StudyBuilder") + `?id=${s.id}`}>
+                          <Button variant="outline" size="sm" className="w-full">
+                            Open Session
                           </Button>
-                        </DropdownMenuTrigger>
-
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => startTogetherMutation.mutate(study)}>
-                            <PlayCircle className="h-4 w-4 mr-2" />
-                            Start Together
-                          </DropdownMenuItem>
-
-                          {/* Optional admin controls */}
-                          <DropdownMenuItem onClick={() => openEditDialog(study)}>
-                            <Edit2 className="h-4 w-4 mr-2" />
-                            Edit Details
-                          </DropdownMenuItem>
-
-                          <DropdownMenuItem onClick={() => togglePublishMutation.mutate(study)}>
-                            {study.is_published ? (
-                              <EyeOff className="h-4 w-4 mr-2" />
-                            ) : (
-                              <Eye className="h-4 w-4 mr-2" />
-                            )}
-                            {study.is_published ? "Unpublish" : "Publish"}
-                          </DropdownMenuItem>
-
-                          <DropdownMenuItem
-                            onClick={() => deleteMutation.mutate(study.id)}
-                            className="text-red-600"
-                          >
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                        </Link>
+                      </div>
                     </div>
-
-                    <div className="flex flex-wrap gap-2 mb-4">
-                      <Badge variant={study.is_published ? "default" : "secondary"}>
-                        {study.is_published ? "Published" : "Draft"}
-                      </Badge>
-                      <DifficultyBadge difficulty={study.difficulty} />
-                      {study.church_id ? <Badge variant="outline">Church</Badge> : <Badge variant="outline">Personal</Badge>}
-                    </div>
-
-                    <div className="flex items-center gap-4 text-sm text-slate-500">
-                      <span className="flex items-center gap-1">
-                        <BookOpen className="h-4 w-4" />
-                        Study
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Users className="h-4 w-4" />
-                        {study.participants_count || 0}
-                      </span>
-                    </div>
-
-                    <div className="mt-4 pt-4 border-t border-slate-100 space-y-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full gap-2"
-                        onClick={() => startTogetherMutation.mutate(study)}
-                        disabled={startTogetherMutation.isPending}
-                      >
-                        {startTogetherMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-                        Start Together
-                      </Button>
-                    </div>
-                  </div>
-                </GradientCard>
-              </motion.div>
-            ))}
+                  </GradientCard>
+                </motion.div>
+              );
+            })}
           </div>
         ) : (
           <EmptyState
+            className=""
             icon={BookOpen}
-            title="No studies yet"
-            description="Create a study or publish one for your church to start together."
-            action={() => openEditDialog()}
-            actionLabel="Create Study"
+            title="No sessions yet"
+            description="Create a session to walk through a study together (without changing the study content)."
+            action={openCreate}
+            actionLabel="New Session"
           />
         )}
       </div>
 
-      {/* Optional: Create/Edit study details dialog */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editStudy ? "Edit Study" : "Create New Study"}</DialogTitle>
+            <DialogTitle>{editSession ? "Edit Session" : "Create New Session"}</DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <Label>Study Title</Label>
-              <Input
-                name="title"
-                defaultValue={editStudy?.title ?? ""}
-                required
-                placeholder="e.g., The Sermon on the Mount"
-              />
-            </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!selectedStudyId) return;
 
-            <div>
-              <Label>Description</Label>
-              <Textarea
-                name="description"
-                defaultValue={editStudy?.description ?? ""}
-                placeholder="Brief overview of this study"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
+              createOrUpdateMutation.mutate({
+                scope,
+                study_id: selectedStudyId,
+                title: customTitle,
+                status,
+              });
+            }}
+            className="space-y-4"
+          >
+            {canShowChurch ? (
               <div>
-                <Label>Scripture Reference</Label>
-                <Input
-                  name="scripture_reference"
-                  defaultValue={editStudy?.scripture_reference ?? ""}
-                  placeholder="e.g., Matthew 5-7"
-                />
-              </div>
-              <div>
-                <Label>Bible Book</Label>
-                <Input name="book" defaultValue={editStudy?.book ?? ""} placeholder="e.g., Matthew" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Difficulty</Label>
-                <Select name="difficulty" defaultValue={editStudy?.difficulty || "beginner"}>
-                  <SelectTrigger>
+                <Label>Session Scope</Label>
+                <Select value={scope} onValueChange={(v: any) => setScope(v)}>
+                  <SelectTrigger className="mt-1">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="beginner">Beginner</SelectItem>
-                    <SelectItem value="intermediate">Intermediate</SelectItem>
-                    <SelectItem value="advanced">Advanced</SelectItem>
+                    <SelectItem value="personal">Personal</SelectItem>
+                    <SelectItem value="church">Church</SelectItem>
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-slate-500 mt-1">
+                  Scope only changes *who shares the session*, not the study content.
+                </p>
               </div>
-              <div>
-                <Label>Estimated Minutes</Label>
-                <Input
-                  name="estimated_minutes"
-                  type="number"
-                  defaultValue={editStudy?.estimated_minutes ?? 20}
-                  min={5}
-                />
-              </div>
+            ) : null}
+
+            <div>
+              <Label>Study Template</Label>
+              <Select value={selectedStudyId} onValueChange={setSelectedStudyId}>
+                <SelectTrigger className="mt-1">
+                  <SelectValue placeholder={loadingStudies ? "Loading…" : "Select a study"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableStudies.length === 0 ? (
+                    <SelectItem value="__none" disabled>
+                      No published studies available
+                    </SelectItem>
+                  ) : (
+                    availableStudies.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.title}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
             </div>
 
             <div>
-              <Label>Tags (comma separated)</Label>
-              <Input name="tags" defaultValue={(editStudy?.tags ?? []).join(", ")} placeholder="grace, faith, salvation" />
+              <Label>Session Title (optional)</Label>
+              <Input
+                value={customTitle}
+                onChange={(e) => setCustomTitle(e.target.value)}
+                placeholder="Leave blank to use the study title"
+                className="mt-1"
+              />
             </div>
 
             <div>
-              <Label>Cover Image URL (optional)</Label>
-              <Input name="cover_image_url" defaultValue={editStudy?.cover_image_url ?? ""} placeholder="https://..." />
+              <Label>Status</Label>
+              <Select value={status} onValueChange={(v: any) => setStatus(v)}>
+                <SelectTrigger className="mt-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="in_progress">In Progress</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="flex justify-end gap-3 pt-4">
               <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={saveMutation.isPending} className="bg-amber-600 hover:bg-amber-700 gap-2">
-                {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                {editStudy ? "Save Changes" : "Create Study"}
+              <Button
+                type="submit"
+                disabled={createOrUpdateMutation.isPending || !selectedStudyId}
+                className="bg-amber-600 hover:bg-amber-700 gap-2"
+              >
+                {createOrUpdateMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                {editSession ? "Save Changes" : "Create Session"}
               </Button>
             </div>
+
+            {createOrUpdateMutation.isError ? (
+              <div className="text-sm text-red-600">
+                {(createOrUpdateMutation.error as any)?.message ?? "Failed to save session."}
+              </div>
+            ) : null}
           </form>
         </DialogContent>
       </Dialog>
