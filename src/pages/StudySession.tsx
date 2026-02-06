@@ -877,7 +877,7 @@ export default function StudySession() {
                     </div>
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-slate-800 truncate">
-                        {p.display_name || p.email || "User"}
+                        {p.display_name || "User"}
                         {session?.created_by === p.id ? <span className="ml-2 text-[10px] text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Host</span> : null}
                       </div>
                       <div className="text-xs text-slate-500 truncate">{p.email || ""}</div>
