@@ -1,7 +1,8 @@
+// src/pages/StudySession.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { useAuth } from "@/auth/AuthProvider";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -23,6 +24,8 @@ import {
   Languages,
   MessageSquare,
   HeartHandshake,
+  Link as LinkIcon,
+  Copy,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -30,6 +33,10 @@ type Track = "beginner" | "intermediate" | "advanced";
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
+}
+
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr.filter(Boolean)));
 }
 
 export default function StudySession() {
@@ -47,6 +54,52 @@ export default function StudySession() {
   const track: Track = (session?.track || session?.difficulty || "beginner") as Track;
   const reference: string = session?.reference || session?.scripture_reference || "";
 
+  const toggleSection = (key: string) => {
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const updateResponse = (field: string, value: any) => {
+    setResponses((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const membershipsQ = useQuery({
+    queryKey: ["session-access-memberships", user?.id],
+    enabled: !!user?.id && !loading,
+    queryFn: async (): Promise<{ groupIds: string[]; churchIds: string[] }> => {
+      const safeIds = async (table: string, col: string) => {
+        const { data, error } = await supabase.from(table).select(col).eq("user_id", user!.id);
+        if (error) {
+          const msg = (error as any)?.message?.toString()?.toLowerCase?.() ?? "";
+          if (msg.includes("does not exist") || msg.includes("relation") || msg.includes("42p01")) {
+            return [] as string[];
+          }
+          throw error;
+        }
+        return (data ?? []).map((r: any) => r[col]).filter(Boolean) as string[];
+      };
+
+      const prof = await supabase
+        .from("profiles")
+        .select("id,church_id")
+        .eq("id", user!.id)
+        .maybeSingle();
+
+      if (prof.error) throw prof.error;
+
+      const profileChurchId = (prof.data as any)?.church_id ? String((prof.data as any).church_id) : null;
+
+      const [groupIds, churchMemberIds] = await Promise.all([
+        safeIds("group_members", "group_id"),
+        safeIds("church_members", "church_id"),
+      ]);
+
+      const churchIds = uniq([...(churchMemberIds ?? []), ...(profileChurchId ? [profileChurchId] : [])]);
+
+      return { groupIds: uniq(groupIds ?? []), churchIds };
+    },
+    staleTime: 30_000,
+  });
+
   const resources = useMemo(
     () => [
       { title: "BibleProject — Book Overviews", url: "https://bibleproject.com/explore/book-overviews/", subtitle: "Quick context + structure" },
@@ -58,14 +111,6 @@ export default function StudySession() {
     ],
     []
   );
-
-  const toggleSection = (key: string) => {
-    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const updateResponse = (field: string, value: any) => {
-    setResponses((prev) => ({ ...prev, [field]: value }));
-  };
 
   const sections = useMemo(() => {
     const common = [
@@ -138,10 +183,10 @@ export default function StudySession() {
         placeholder: "What context matters here (author, setting, situation)...",
         field: "historical_context",
         tools: [
-         { label: "BibleProject", url: "https://bibleproject.com/explore/book-overviews/" },
-         { label: "StepBible", url: "https://www.stepbible.org/" },
-         { label: "Bible Odyssey", url: "https://www.bibleodyssey.org/" },
-         { label: "NET Bible", url: "https://netbible.org/" },
+          { label: "BibleProject", url: "https://bibleproject.com/explore/book-overviews/" },
+          { label: "StepBible", url: "https://www.stepbible.org/" },
+          { label: "Bible Odyssey", url: "https://www.bibleodyssey.org/" },
+          { label: "NET Bible", url: "https://netbible.org/" },
         ],
       },
       {
@@ -362,22 +407,27 @@ export default function StudySession() {
       setHydrating(true);
 
       try {
-        const { data: sess, error: sessErr } = await supabase
-          .from("study_sessions")
-          .select("*")
-          .eq("id", sessionId)
-          .single();
-
+        const { data: sess, error: sessErr } = await supabase.from("study_sessions").select("*").eq("id", sessionId).single();
         if (sessErr) throw sessErr;
 
-        // Basic ownership guard (for now). Later we can expand to group/church sessions.
-        if (sess?.created_by && sess.created_by !== user.id) {
+        // Access check:
+        // allow if:
+        // - you created it, OR
+        // - session.group_id is in your groups, OR
+        // - session.church_id is in your churches (including profiles.church_id)
+        const groupIds = membershipsQ.data?.groupIds ?? [];
+        const churchIds = membershipsQ.data?.churchIds ?? [];
+
+        const isOwner = sess?.created_by === user.id;
+        const isGroupMember = !!sess?.group_id && groupIds.includes(String(sess.group_id));
+        const isChurchMember = !!sess?.church_id && churchIds.includes(String(sess.church_id));
+
+        if (!isOwner && !isGroupMember && !isChurchMember) {
           throw new Error("You don’t have access to this study session.");
         }
 
         setSession(sess);
 
-        // Load the single “__all__” response row if it exists
         const { data: r, error: rErr } = await supabase
           .from("study_session_responses")
           .select("id, responses, notes")
@@ -403,14 +453,13 @@ export default function StudySession() {
     };
 
     run();
-  }, [loading, user, sessionId, supabase, navigate]);
+  }, [loading, user, sessionId, supabase, navigate, membershipsQ.data]);
 
   const saveMutation = useMutation({
     mutationFn: async (markComplete: boolean) => {
       if (!user) throw new Error("Not authenticated.");
       if (!sessionId) throw new Error("Missing sessionId.");
 
-      // Find existing response row id (if any)
       const { data: existing, error: findErr } = await supabase
         .from("study_session_responses")
         .select("id")
@@ -428,15 +477,11 @@ export default function StudySession() {
         prompt_key: "__all__",
         responses: { ...responses, notes: responses.notes ?? "" },
         notes: (responses.notes ?? "").toString(),
-        response: null as any, // keep column unused; we store everything in jsonb
+        response: null as any,
       };
 
       if (existing?.id) {
-        const { error: upErr } = await supabase
-          .from("study_session_responses")
-          .update(payload)
-          .eq("id", existing.id);
-
+        const { error: upErr } = await supabase.from("study_session_responses").update(payload).eq("id", existing.id);
         if (upErr) throw upErr;
       } else {
         const { error: insErr } = await supabase.from("study_session_responses").insert(payload);
@@ -446,10 +491,7 @@ export default function StudySession() {
       if (markComplete) {
         const { error: sessUpErr } = await supabase
           .from("study_sessions")
-          .update({
-            status: "completed",
-            completed_at: new Date().toISOString(),
-          })
+          .update({ status: "completed", completed_at: new Date().toISOString() })
           .eq("id", sessionId);
 
         if (sessUpErr) throw sessUpErr;
@@ -460,7 +502,16 @@ export default function StudySession() {
     },
   });
 
-  if (loading || hydrating) {
+  const copyLink = async () => {
+    try {
+      const url = `${window.location.origin}/study-session?sessionId=${encodeURIComponent(sessionId)}`;
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // ignore
+    }
+  };
+
+  if (loading || hydrating || membershipsQ.isLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <Loader2 className="h-10 w-10 animate-spin text-amber-600" />
@@ -489,23 +540,61 @@ export default function StudySession() {
 
   const genreValue = (responses.genre ?? "") as string;
 
+  const isSharedSession = !!session?.group_id || !!session?.church_id;
+  const sharedLabel = session?.group_id ? "Group session" : session?.church_id ? "Church session" : "";
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-gradient-to-br from-amber-600 via-amber-500 to-orange-500 text-white">
         <div className="max-w-4xl mx-auto px-6 py-10">
-          <Link
-            to="/start-study"
-            className="inline-flex items-center gap-2 text-amber-100 hover:text-white mb-6 text-sm"
-          >
+          <Link to="/studies" className="inline-flex items-center gap-2 text-amber-100 hover:text-white mb-6 text-sm">
             <ChevronLeft className="h-4 w-4" />
-            Back
+            Back to Studies
           </Link>
           <h1 className="text-3xl font-serif font-bold mb-2">{reference || "Study Session"}</h1>
-          <p className="text-amber-100 capitalize">{track} Track</p>
+          <p className="text-amber-100 capitalize">
+            {track} Track{isSharedSession ? ` • ${sharedLabel}` : ""}
+          </p>
         </div>
       </div>
 
       <div className="max-w-4xl mx-auto px-6 py-10">
+        {/* Studying together banner */}
+        {isSharedSession && (
+          <GradientCard variant="warm" className="p-6 mb-8">
+            <div className="flex items-start gap-4">
+              <div className="p-2 rounded-xl bg-white/60 border border-white/40">
+                <Users className="h-5 w-5 text-amber-700" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-900">Studying together</div>
+                <div className="text-sm text-slate-600 mt-1">
+                  This session is shared with others in your {session?.group_id ? "group" : "church"}. Everyone uses the same prompts—each person saves their own responses.
+                </div>
+                <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                  <Button variant="outline" onClick={copyLink} className="gap-2">
+                    <Copy className="h-4 w-4" />
+                    Copy Session Link
+                  </Button>
+                  <a
+                    href={`/study-session?sessionId=${encodeURIComponent(sessionId)}`}
+                    className="inline-flex"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      void copyLink();
+                    }}
+                  >
+                    <Button variant="ghost" className="gap-2">
+                      <LinkIcon className="h-4 w-4" />
+                      Share with others
+                    </Button>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </GradientCard>
+        )}
+
         {/* Resources */}
         <GradientCard variant="sage" className="p-6 mb-8">
           <h3 className="font-bold text-slate-800 mb-3">Study Resources</h3>
@@ -609,8 +698,13 @@ export default function StudySession() {
           })}
         </div>
 
-        {/* Notes (end) */}
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: currentSections.length * 0.03 }} className="mt-4">
+        {/* Notes */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: currentSections.length * 0.03 }}
+          className="mt-4"
+        >
           <Collapsible open={!!openSections.notes} onOpenChange={() => toggleSection("notes")}>
             <GradientCard>
               <CollapsibleTrigger className="w-full p-6 text-left flex items-center gap-4 hover:bg-white/40 transition-colors">
@@ -640,11 +734,7 @@ export default function StudySession() {
 
         {/* Save/Complete */}
         <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-end">
-          <Button
-            variant="outline"
-            onClick={() => saveMutation.mutate(false)}
-            disabled={saveMutation.isPending}
-          >
+          <Button variant="outline" onClick={() => saveMutation.mutate(false)} disabled={saveMutation.isPending}>
             {saveMutation.isPending ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />

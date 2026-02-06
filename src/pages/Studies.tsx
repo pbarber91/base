@@ -25,6 +25,11 @@ type StudySessionRow = {
   updated_at: string;
 };
 
+type ProfileRow = {
+  id: string;
+  church_id: string | null;
+};
+
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
@@ -54,11 +59,17 @@ function getReference(s: StudySessionRow) {
   return s.reference || s.scripture_reference || "Study Session";
 }
 
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr.filter(Boolean)));
+}
+
 export default function Studies() {
   const { user, supabase, loading } = useAuth();
   const navigate = useNavigate();
 
-  // 1) Your sessions (always the primary thing on this page)
+  const openSession = (id: string) => navigate(`/study-session?sessionId=${encodeURIComponent(id)}`);
+
+  // 1) Your sessions
   const mySessionsQ = useQuery({
     queryKey: ["my-study-sessions", user?.id],
     enabled: !!user?.id && !loading,
@@ -77,29 +88,49 @@ export default function Studies() {
     staleTime: 15_000,
   });
 
-  // 2) Membership lookup (groups + churches)
+  // 2) Active church (from profiles.church_id) + optional membership tables if they exist
   const membershipsQ = useQuery({
     queryKey: ["study-memberships", user?.id],
     enabled: !!user?.id && !loading,
     queryFn: async (): Promise<{ groupIds: string[]; churchIds: string[] }> => {
-      const [gm, cm] = await Promise.all([
-        supabase.from("group_members").select("group_id").eq("user_id", user!.id),
-        supabase.from("church_members").select("church_id").eq("user_id", user!.id),
+      if (!user?.id) return { groupIds: [], churchIds: [] };
+
+      // Always read profiles.church_id (this is your “active church” today)
+      const prof = await supabase
+        .from("profiles")
+        .select("id,church_id")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (prof.error) throw prof.error;
+      const profile = (prof.data ?? null) as ProfileRow | null;
+
+      const safeIds = async (table: string, col: string) => {
+        const { data, error } = await supabase.from(table).select(col).eq("user_id", user.id);
+        if (error) {
+          // If table doesn't exist (common during transition), treat as empty.
+          const msg = (error as any)?.message?.toString()?.toLowerCase?.() ?? "";
+          if (msg.includes("does not exist") || msg.includes("relation") || msg.includes("42p01")) {
+            return [] as string[];
+          }
+          throw error;
+        }
+        return (data ?? []).map((r: any) => r[col]).filter(Boolean) as string[];
+      };
+
+      const [groupIds, churchMemberIds] = await Promise.all([
+        safeIds("group_members", "group_id"),
+        safeIds("church_members", "church_id"),
       ]);
 
-      if (gm.error) throw gm.error;
-      if (cm.error) throw cm.error;
+      const churchIds = uniq([...(churchMemberIds ?? []), ...(profile?.church_id ? [profile.church_id] : [])]);
 
-      const groupIds = (gm.data ?? []).map((r: any) => r.group_id).filter(Boolean);
-      const churchIds = (cm.data ?? []).map((r: any) => r.church_id).filter(Boolean);
-
-      return { groupIds, churchIds };
+      return { groupIds: uniq(groupIds ?? []), churchIds };
     },
     staleTime: 30_000,
   });
 
-  // 3) Shared sessions: sessions started in a group/church you belong to.
-  //    (Does NOT include your own sessions; those are already shown above.)
+  // 3) Shared sessions: sessions tied to a group/church you belong to (including your profile church_id)
   const sharedSessionsQ = useQuery({
     queryKey: ["shared-study-sessions", user?.id, membershipsQ.data?.groupIds, membershipsQ.data?.churchIds],
     enabled: !!user?.id && !loading && !!membershipsQ.data,
@@ -109,30 +140,37 @@ export default function Studies() {
 
       if (groupIds.length === 0 && churchIds.length === 0) return [];
 
-      // Pull a reasonable amount; we can paginate later if needed.
-      // We also keep this focused on non-completed to emphasize “active with others”.
       let query = supabase
         .from("study_sessions")
         .select(
           "id,created_by,church_id,group_id,study_id,reference,scripture_reference,track,difficulty,status,started_at,completed_at,created_at,updated_at"
         )
-        .neq("created_by", user!.id)
         .order("updated_at", { ascending: false })
         .limit(50);
 
-      // Supabase OR filter: group_id in (...) OR church_id in (...)
-      // Build safely based on which lists exist.
       const orParts: string[] = [];
       if (groupIds.length > 0) orParts.push(`group_id.in.(${groupIds.join(",")})`);
       if (churchIds.length > 0) orParts.push(`church_id.in.(${churchIds.join(",")})`);
       if (orParts.length > 0) query = query.or(orParts.join(","));
 
+      // Don’t show duplicates of your own personal sessions in “Shared”
+      // BUT if you started a church/group session yourself, it's still helpful to show it in Shared.
+      // We'll only filter out your sessions that have no group/church linkage.
+      query = query.neq("created_by", ""); // no-op guard
+
       const { data, error } = await query;
       if (error) throw error;
 
       const rows = (data ?? []) as StudySessionRow[];
-      // Emphasize “ongoing” shared sessions first
-      return rows.sort((a, b) => {
+
+      const filtered = rows.filter((s) => {
+        const isMine = s.created_by === user!.id;
+        const isLinked = !!s.group_id || !!s.church_id;
+        if (isMine && !isLinked) return false;
+        return true;
+      });
+
+      return filtered.sort((a, b) => {
         const ac = isCompleted(a) ? 1 : 0;
         const bc = isCompleted(b) ? 1 : 0;
         if (ac !== bc) return ac - bc;
@@ -153,8 +191,6 @@ export default function Studies() {
 
   const isBusy = loading || mySessionsQ.isLoading || membershipsQ.isLoading || sharedSessionsQ.isLoading;
 
-  const openSession = (id: string) => navigate(`/study-session?sessionId=${encodeURIComponent(id)}`);
-
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -165,7 +201,7 @@ export default function Studies() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Header / Landing explanation */}
+      {/* Header */}
       <div className="bg-gradient-to-br from-amber-600 via-amber-500 to-orange-500 text-white">
         <div className="max-w-7xl mx-auto px-6 py-14">
           <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="max-w-3xl">
@@ -231,11 +267,7 @@ export default function Studies() {
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {myActive.map((s, i) => (
                 <motion.div key={s.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}>
-                  <button
-                    onClick={() => openSession(s.id)}
-                    className="w-full text-left"
-                    aria-label={`Resume ${getReference(s)}`}
-                  >
+                  <button onClick={() => openSession(s.id)} className="w-full text-left" aria-label={`Resume ${getReference(s)}`}>
                     <GradientCard className="p-5 hover:shadow-md transition-shadow">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -261,9 +293,7 @@ export default function Studies() {
           <p className="text-sm text-slate-600 mb-4">Completed and past studies (for reflection).</p>
 
           {myHistory.length === 0 ? (
-            <GradientCard className="p-6 text-sm text-slate-600">
-              Nothing completed yet.
-            </GradientCard>
+            <GradientCard className="p-6 text-sm text-slate-600">Nothing completed yet.</GradientCard>
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {myHistory.map((s, i) => (
@@ -290,13 +320,11 @@ export default function Studies() {
             <h2 className="text-xl font-bold text-slate-900">Shared with you</h2>
           </div>
           <p className="text-sm text-slate-600 mb-4">
-            Sessions tied to a group or church you belong to (so you can connect with others doing the same study).
+            Sessions tied to a group or your selected church (from your profile) so you can connect with others doing the same study.
           </p>
 
           {sharedSessions.length === 0 ? (
-            <GradientCard className="p-6 text-sm text-slate-600">
-              Nothing shared yet.
-            </GradientCard>
+            <GradientCard className="p-6 text-sm text-slate-600">Nothing shared yet.</GradientCard>
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {sharedSessions.map((s, i) => (
@@ -311,6 +339,7 @@ export default function Studies() {
                           </div>
                           <div className="text-xs text-slate-500 mt-1">
                             {s.group_id ? "Group session" : s.church_id ? "Church session" : "Shared session"}
+                            {s.created_by === user?.id ? " • Started by you" : ""}
                           </div>
                         </div>
                         <ArrowRight className="h-5 w-5 text-slate-400 flex-shrink-0 mt-0.5" />
@@ -325,7 +354,7 @@ export default function Studies() {
 
         {/* Errors */}
         {(mySessionsQ.isError || membershipsQ.isError || sharedSessionsQ.isError) && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          <div className={cx("rounded-xl border p-4 text-sm", "border-rose-200 bg-rose-50 text-rose-800")}>
             {(mySessionsQ.error as any)?.message ||
               (membershipsQ.error as any)?.message ||
               (sharedSessionsQ.error as any)?.message ||
