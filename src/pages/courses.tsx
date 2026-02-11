@@ -1,11 +1,11 @@
-// src/pages/courses.tsx
 import React, { useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/button";
 import GradientCard from "@/components/ui/GradientCard";
-import { Loader2, GraduationCap, ArrowRight, Globe, Lock } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Loader2, GraduationCap, ArrowRight, ShieldCheck } from "lucide-react";
 import { motion } from "framer-motion";
 import { createPageUrl } from "@/utils";
 
@@ -14,28 +14,25 @@ type CourseRow = {
   church_id: string | null;
   title: string;
   description: string | null;
-  tags: string[];
+  tags: string[] | null;
   cover_image_url: string | null;
   is_published: boolean;
   is_public: boolean;
+  created_by: string;
   created_at: string;
   updated_at: string;
 };
 
-function formatWhen(iso: string) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric" });
-  } catch {
-    return iso;
-  }
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
 }
 
 export default function Courses() {
   const { user, supabase, loading } = useAuth();
+  const navigate = useNavigate();
 
-  const myChurchIdsQ = useQuery({
-    queryKey: ["my-church-ids-for-courses", user?.id],
+  const membershipsQ = useQuery({
+    queryKey: ["courses-church-memberships", user?.id],
     enabled: !!user?.id && !loading,
     queryFn: async (): Promise<string[]> => {
       const { data, error } = await supabase.from("church_members").select("church_id").eq("user_id", user!.id);
@@ -46,49 +43,42 @@ export default function Courses() {
   });
 
   const coursesQ = useQuery({
-    queryKey: ["courses-visible", user?.id, myChurchIdsQ.data],
-    enabled: !loading && (!!user?.id ? !!myChurchIdsQ.data : true),
+    queryKey: ["courses-list", user?.id, membershipsQ.data?.join(",")],
+    enabled: !loading && (!!user?.id),
     queryFn: async (): Promise<CourseRow[]> => {
-      // 1) Always only published courses show in participant listing.
-      // 2) Visibility logic:
-      //    - is_public = true => anyone
-      //    - is_public = false => only if church_id in my churches
-      const churchIds = myChurchIdsQ.data ?? [];
+      const churchIds = membershipsQ.data ?? [];
 
+      // Show:
+      // - published public courses
+      // - published church-only courses if you are a member of that church
+      // (admins will also see drafts through AdminCourses)
       let query = supabase
         .from("courses")
-        .select("id,church_id,title,description,tags,cover_image_url,is_published,is_public,created_at,updated_at")
+        .select("id,church_id,title,description,tags,cover_image_url,is_published,is_public,created_by,created_at,updated_at")
         .eq("is_published", true)
-        .order("updated_at", { ascending: false })
-        .limit(100);
+        .order("updated_at", { ascending: false });
 
-      if (!user) {
-        // not logged in => only public courses
-        query = query.eq("is_public", true);
+      if (churchIds.length > 0) {
+        query = query.or(`is_public.eq.true,and(is_public.eq.false,church_id.in.(${churchIds.join(",")}))`);
       } else {
-        // logged in => public OR church-only courses for their churches
-        const orParts: string[] = ["is_public.eq.true"];
-        if (churchIds.length > 0) {
-          orParts.push(`and(is_public.eq.false,church_id.in.(${churchIds.join(",")}))`);
-        }
-        query = query.or(orParts.join(","));
+        query = query.eq("is_public", true);
       }
 
       const { data, error } = await query;
       if (error) throw error;
-      return (data ?? []) as CourseRow[];
+      return (data ?? []) as any[];
     },
-    staleTime: 15_000,
+    staleTime: 10_000,
   });
 
-  const isBusy = loading || coursesQ.isLoading || myChurchIdsQ.isLoading;
+  const isBusy = loading || membershipsQ.isLoading || coursesQ.isLoading;
 
   const courses = coursesQ.data ?? [];
 
-  const { publicCourses, churchCourses } = useMemo(() => {
-    const pub = courses.filter((c) => c.is_public);
-    const ch = courses.filter((c) => !c.is_public);
-    return { publicCourses: pub, churchCourses: ch };
+  const grouped = useMemo(() => {
+    const publicCourses = courses.filter((c) => c.is_public);
+    const churchCourses = courses.filter((c) => !c.is_public);
+    return { publicCourses, churchCourses };
   }, [courses]);
 
   if (loading) {
@@ -97,6 +87,11 @@ export default function Courses() {
         <Loader2 className="h-10 w-10 animate-spin text-violet-600" />
       </div>
     );
+  }
+
+  if (!user) {
+    navigate("/get-started", { replace: true });
+    return null;
   }
 
   return (
@@ -111,17 +106,10 @@ export default function Courses() {
               <span className="text-violet-100 font-medium">Courses</span>
             </div>
 
-            <h1 className="text-4xl font-serif font-bold mb-3">Learn together, on purpose</h1>
+            <h1 className="text-4xl font-serif font-bold mb-3">Grow with your church</h1>
             <p className="text-lg text-violet-100 leading-relaxed">
-              Courses are church-led learning paths with sessions and embedded content. Published courses appear here.
-              Visibility controls whether a course is Public or Church-only.
+              Courses are structured, session-based learning experiences with videos, readings, and discussion.
             </p>
-
-            <div className="mt-6 flex gap-3">
-              <Link to={createPageUrl("AdminCourses")}>
-                <Button className="bg-white text-violet-700 hover:bg-violet-50">Admin / Build Courses</Button>
-              </Link>
-            </div>
           </motion.div>
         </div>
       </div>
@@ -136,18 +124,20 @@ export default function Courses() {
 
         {/* Public */}
         <div>
-          <div className="flex items-center gap-2 mb-3">
-            <Globe className="h-5 w-5 text-slate-700" />
-            <h2 className="text-xl font-bold text-slate-900">Public courses</h2>
+          <div className="flex items-center justify-between gap-4 mb-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Public Courses</h2>
+              <p className="text-sm text-slate-600">Available to anyone.</p>
+            </div>
           </div>
 
-          {publicCourses.length === 0 ? (
+          {grouped.publicCourses.length === 0 ? (
             <GradientCard className="p-6 text-sm text-slate-600">No public courses yet.</GradientCard>
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {publicCourses.map((c, i) => (
+              {grouped.publicCourses.map((c, i) => (
                 <motion.div key={c.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.02 }}>
-                  <Link to={createPageUrl("CourseDetail") + `?id=${encodeURIComponent(c.id)}`}>
+                  <Link to={createPageUrl("CourseDetail") + `?id=${c.id}`} className="block">
                     <GradientCard className="overflow-hidden hover:shadow-md transition-shadow">
                       {c.cover_image_url ? (
                         <div className="h-32 overflow-hidden">
@@ -158,10 +148,18 @@ export default function Courses() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="font-semibold text-slate-900 truncate">{c.title}</div>
-                            <div className="text-sm text-slate-600 line-clamp-2 mt-1">{c.description || ""}</div>
-                            <div className="text-xs text-slate-500 mt-2">Updated {formatWhen(c.updated_at)}</div>
+                            <div className="text-sm text-slate-600 line-clamp-2 mt-1">{c.description || "—"}</div>
                           </div>
-                          <ArrowRight className="h-5 w-5 text-slate-400 mt-0.5" />
+                          <ArrowRight className="h-5 w-5 text-slate-400 mt-1" />
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Badge>Public</Badge>
+                          {(c.tags ?? []).slice(0, 2).map((t) => (
+                            <Badge key={t} variant="outline">
+                              {t}
+                            </Badge>
+                          ))}
                         </div>
                       </div>
                     </GradientCard>
@@ -174,25 +172,21 @@ export default function Courses() {
 
         {/* Church-only */}
         <div>
-          <div className="flex items-center gap-2 mb-3">
-            <Lock className="h-5 w-5 text-slate-700" />
-            <h2 className="text-xl font-bold text-slate-900">Church-only courses</h2>
+          <div className="flex items-center gap-2 mb-1">
+            <ShieldCheck className="h-5 w-5 text-slate-700" />
+            <h2 className="text-xl font-bold text-slate-900">Your Church Courses</h2>
           </div>
-          <p className="text-sm text-slate-600 mb-3">
-            These are published, but restricted to members of the offering church.
+          <p className="text-sm text-slate-600 mb-4">
+            Published courses visible only to members of your church.
           </p>
 
-          {!user ? (
-            <GradientCard className="p-6 text-sm text-slate-600">
-              Sign in to see church-only courses you have access to.
-            </GradientCard>
-          ) : churchCourses.length === 0 ? (
-            <GradientCard className="p-6 text-sm text-slate-600">No church-only courses available to you.</GradientCard>
+          {grouped.churchCourses.length === 0 ? (
+            <GradientCard className="p-6 text-sm text-slate-600">No church-only courses available to you yet.</GradientCard>
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {churchCourses.map((c, i) => (
+              {grouped.churchCourses.map((c, i) => (
                 <motion.div key={c.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.02 }}>
-                  <Link to={createPageUrl("CourseDetail") + `?id=${encodeURIComponent(c.id)}`}>
+                  <Link to={createPageUrl("CourseDetail") + `?id=${c.id}`} className="block">
                     <GradientCard className="overflow-hidden hover:shadow-md transition-shadow">
                       {c.cover_image_url ? (
                         <div className="h-32 overflow-hidden">
@@ -203,10 +197,18 @@ export default function Courses() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="font-semibold text-slate-900 truncate">{c.title}</div>
-                            <div className="text-sm text-slate-600 line-clamp-2 mt-1">{c.description || ""}</div>
-                            <div className="text-xs text-slate-500 mt-2">Updated {formatWhen(c.updated_at)}</div>
+                            <div className="text-sm text-slate-600 line-clamp-2 mt-1">{c.description || "—"}</div>
                           </div>
-                          <ArrowRight className="h-5 w-5 text-slate-400 mt-0.5" />
+                          <ArrowRight className="h-5 w-5 text-slate-400 mt-1" />
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Badge variant="outline">Church-only</Badge>
+                          {(c.tags ?? []).slice(0, 2).map((t) => (
+                            <Badge key={t} variant="outline">
+                              {t}
+                            </Badge>
+                          ))}
                         </div>
                       </div>
                     </GradientCard>
@@ -217,11 +219,11 @@ export default function Courses() {
           )}
         </div>
 
-        {coursesQ.isError ? (
+        {(coursesQ.isError || membershipsQ.isError) && (
           <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-            {(coursesQ.error as any)?.message ?? "Failed to load courses."}
+            {(coursesQ.error as any)?.message || (membershipsQ.error as any)?.message || "Failed to load courses."}
           </div>
-        ) : null}
+        )}
       </div>
     </div>
   );
