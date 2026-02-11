@@ -1,215 +1,213 @@
-import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+// src/pages/CourseBuilder.tsx
+import React, { useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "@/auth/AuthProvider";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { 
-  Plus, Edit2, Trash2, ChevronLeft, GripVertical, Save,
-  Video, FileText, BookOpen, Quote, MessageSquare, Link2, Loader2, X
+import GradientCard from "@/components/ui/GradientCard";
+import { createPageUrl } from "@/utils";
+import {
+  ChevronLeft,
+  Plus,
+  GripVertical,
+  Trash2,
+  Edit2,
+  Save,
+  Loader2,
+  Video,
+  FileText,
+  Link2,
+  BookOpen,
 } from "lucide-react";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
-import GradientCard from "@/components/ui/GradientCard";
-import { Link } from "react-router-dom";
-import { createPageUrl } from "@/utils";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 
-const BLOCK_TYPES = [
-  { type: 'text', label: 'Text', icon: FileText, color: 'slate' },
-  { type: 'video', label: 'Video', icon: Video, color: 'red' },
-  { type: 'scripture', label: 'Scripture', icon: BookOpen, color: 'amber' },
-  { type: 'quote', label: 'Quote', icon: Quote, color: 'violet' },
-  { type: 'discussion_question', label: 'Discussion', icon: MessageSquare, color: 'blue' },
-  { type: 'resource_link', label: 'Resource Link', icon: Link2, color: 'emerald' },
-];
+type CourseRow = {
+  id: string;
+  church_id: string | null;
+  title: string;
+  description: string | null;
+  is_published: boolean;
+  is_public: boolean;
+};
 
-function ContentBlockEditor({ block, onChange, onRemove }) {
-  const config = BLOCK_TYPES.find(b => b.type === block.type) || BLOCK_TYPES[0];
-  const Icon = config.icon;
+type CourseSessionRow = {
+  id: string;
+  course_id: string;
+  title: string;
+  description: string | null;
+  order_index: number;
+  estimated_minutes: number | null;
+  blocks: any[];
+};
 
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <div className="flex items-center gap-3 mb-4">
-        <div className={`p-2 rounded-lg bg-${config.color}-100`}>
-          <Icon className={`h-4 w-4 text-${config.color}-600`} />
-        </div>
-        <Badge variant="outline">{config.label}</Badge>
-        <Button variant="ghost" size="icon" onClick={onRemove} className="ml-auto h-8 w-8 text-red-500 hover:text-red-600">
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </div>
-      
-      {(block.type === 'text' || block.type === 'discussion_question' || block.type === 'quote') && (
-        <Textarea
-          value={block.content || ''}
-          onChange={(e) => onChange({ ...block, content: e.target.value })}
-          placeholder={block.type === 'quote' ? 'Enter the quote...' : block.type === 'discussion_question' ? 'Enter your discussion question...' : 'Enter your content...'}
-          className="min-h-[100px]"
-        />
-      )}
-      
-      {block.type === 'quote' && (
-        <Input
-          value={block.attribution || ''}
-          onChange={(e) => onChange({ ...block, attribution: e.target.value })}
-          placeholder="Attribution (optional)"
-          className="mt-3"
-        />
-      )}
-      
-      {block.type === 'video' && (
-        <Input
-          value={block.video_url || ''}
-          onChange={(e) => onChange({ ...block, video_url: e.target.value })}
-          placeholder="Video URL (YouTube, Vimeo, etc.)"
-        />
-      )}
-      
-      {block.type === 'scripture' && (
-        <>
-          <Input
-            value={block.scripture_ref || ''}
-            onChange={(e) => onChange({ ...block, scripture_ref: e.target.value })}
-            placeholder="Scripture Reference (e.g., John 3:16)"
-            className="mb-3"
-          />
-          <Textarea
-            value={block.content || ''}
-            onChange={(e) => onChange({ ...block, content: e.target.value })}
-            placeholder="Scripture text (optional - readers can look it up)"
-            className="min-h-[80px]"
-          />
-        </>
-      )}
-      
-      {block.type === 'resource_link' && (
-        <>
-          <Input
-            value={block.content || ''}
-            onChange={(e) => onChange({ ...block, content: e.target.value })}
-            placeholder="Resource title"
-            className="mb-3"
-          />
-          <Input
-            value={block.video_url || ''}
-            onChange={(e) => onChange({ ...block, video_url: e.target.value })}
-            placeholder="Resource URL"
-          />
-        </>
-      )}
-    </div>
-  );
+type Block =
+  | { type: "text"; title?: string; body?: string }
+  | { type: "video"; title?: string; url?: string }
+  | { type: "link"; title?: string; url?: string; description?: string };
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
 }
 
+const BLOCK_TYPES = [
+  { type: "text" as const, label: "Text", icon: FileText },
+  { type: "video" as const, label: "Video", icon: Video },
+  { type: "link" as const, label: "Link", icon: Link2 },
+];
+
 export default function CourseBuilder() {
-  const urlParams = new URLSearchParams(window.location.search);
-  const courseId = urlParams.get('id');
-  
-  const [editSession, setEditSession] = useState(null);
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [sessionBlocks, setSessionBlocks] = useState([]);
+  const { user, supabase, loading } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const { data: course, isLoading: loadingCourse } = useQuery({
-    queryKey: ['course', courseId],
-    queryFn: () => base44.entities.Course.filter({ id: courseId }, null, 1).then(r => r[0]),
-    enabled: !!courseId
-  });
+  const urlParams = new URLSearchParams(window.location.search);
+  const courseId = urlParams.get("id") || "";
 
-  const { data: sessions = [], isLoading: loadingSessions } = useQuery({
-    queryKey: ['sessions', courseId],
-    queryFn: () => base44.entities.CourseSession.filter({ course_id: courseId }, 'order'),
-    enabled: !!courseId
-  });
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editSession, setEditSession] = useState<CourseSessionRow | null>(null);
 
-  const saveSessionMutation = useMutation({
-    mutationFn: async (data) => {
-      if (editSession?.id) {
-        return base44.entities.CourseSession.update(editSession.id, data);
-      }
-      const newSession = await base44.entities.CourseSession.create({
-        ...data,
-        course_id: courseId,
-        order: sessions.length + 1
-      });
-      await base44.entities.Course.update(courseId, { sessions_count: sessions.length + 1 });
-      return newSession;
+  const [blocks, setBlocks] = useState<Block[]>([{ type: "text", title: "", body: "" }]);
+
+  const canUse = !!user?.id && !loading && !!courseId;
+
+  const courseQ = useQuery({
+    queryKey: ["course", courseId],
+    enabled: canUse,
+    queryFn: async (): Promise<CourseRow | null> => {
+      const { data, error } = await supabase
+        .from("courses")
+        .select("id,church_id,title,description,is_published,is_public")
+        .eq("id", courseId)
+        .maybeSingle();
+      if (error) throw error;
+      return (data as any) ?? null;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries(['sessions']);
-      queryClient.invalidateQueries(['course']);
-      setIsDialogOpen(false);
-      setEditSession(null);
-      setSessionBlocks([]);
-    }
   });
 
-  const deleteSessionMutation = useMutation({
-    mutationFn: async (id) => {
-      await base44.entities.CourseSession.delete(id);
-      await base44.entities.Course.update(courseId, { sessions_count: Math.max(0, sessions.length - 1) });
+  const sessionsQ = useQuery({
+    queryKey: ["course-sessions", courseId],
+    enabled: canUse,
+    queryFn: async (): Promise<CourseSessionRow[]> => {
+      const { data, error } = await supabase
+        .from("course_sessions")
+        .select("id,course_id,title,description,order_index,estimated_minutes,blocks")
+        .eq("course_id", courseId)
+        .order("order_index", { ascending: true });
+      if (error) throw error;
+      return ((data ?? []) as any[]).map((r) => ({ ...r, blocks: Array.isArray(r.blocks) ? r.blocks : [] })) as CourseSessionRow[];
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries(['sessions']);
-      queryClient.invalidateQueries(['course']);
-    }
+    staleTime: 10_000,
   });
 
-  const reorderMutation = useMutation({
-    mutationFn: async (reorderedSessions) => {
-      for (let i = 0; i < reorderedSessions.length; i++) {
-        await base44.entities.CourseSession.update(reorderedSessions[i].id, { order: i + 1 });
-      }
-    },
-    onSuccess: () => queryClient.invalidateQueries(['sessions'])
-  });
-
-  const openEditDialog = (session = null) => {
-    setEditSession(session);
-    setSessionBlocks(session?.content_blocks || []);
+  const openNew = () => {
+    setEditSession(null);
+    setBlocks([{ type: "text", title: "", body: "" }]);
     setIsDialogOpen(true);
   };
 
-  const addBlock = (type) => {
-    setSessionBlocks([...sessionBlocks, { id: Date.now().toString(), type, content: '' }]);
+  const openEdit = (s: CourseSessionRow) => {
+    setEditSession(s);
+    setBlocks((Array.isArray(s.blocks) ? s.blocks : []) as any);
+    setIsDialogOpen(true);
   };
 
-  const updateBlock = (index, updatedBlock) => {
-    const newBlocks = [...sessionBlocks];
-    newBlocks[index] = updatedBlock;
-    setSessionBlocks(newBlocks);
-  };
+  const deleteSessionMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("course_sessions").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["course-sessions", courseId] });
+    },
+  });
 
-  const removeBlock = (index) => {
-    setSessionBlocks(sessionBlocks.filter((_, i) => i !== index));
-  };
+  const saveSessionMutation = useMutation({
+    mutationFn: async (payload: Omit<CourseSessionRow, "id"> & { id?: string }) => {
+      if (!user) throw new Error("Not authenticated.");
 
-  const handleDragEnd = (result) => {
+      if (payload.id) {
+        const { error } = await supabase
+          .from("course_sessions")
+          .update({
+            title: payload.title,
+            description: payload.description,
+            estimated_minutes: payload.estimated_minutes,
+            blocks: payload.blocks,
+          })
+          .eq("id", payload.id);
+        if (error) throw error;
+        return { id: payload.id };
+      }
+
+      // new session => order_index = end
+      const existing = sessionsQ.data ?? [];
+      const order_index = existing.length;
+
+      const { data, error } = await supabase
+        .from("course_sessions")
+        .insert({
+          course_id: courseId,
+          title: payload.title,
+          description: payload.description,
+          order_index,
+          estimated_minutes: payload.estimated_minutes,
+          blocks: payload.blocks,
+        })
+        .select("id")
+        .single();
+
+      if (error) throw error;
+      return data as any;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["course-sessions", courseId] });
+      setIsDialogOpen(false);
+      setEditSession(null);
+    },
+  });
+
+  const reorderMutation = useMutation({
+    mutationFn: async (ordered: CourseSessionRow[]) => {
+      // update order_index in batch (simple loop)
+      for (let i = 0; i < ordered.length; i++) {
+        const s = ordered[i];
+        const { error } = await supabase.from("course_sessions").update({ order_index: i }).eq("id", s.id);
+        if (error) throw error;
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["course-sessions", courseId] });
+    },
+  });
+
+  const onDragEnd = (result: any) => {
     if (!result.destination) return;
-    
-    const items = Array.from(sessions);
-    const [reorderedItem] = items.splice(result.source.index, 1);
-    items.splice(result.destination.index, 0, reorderedItem);
-    
-    reorderMutation.mutate(items);
+    const list = [...(sessionsQ.data ?? [])];
+    const [moved] = list.splice(result.source.index, 1);
+    list.splice(result.destination.index, 0, moved);
+    reorderMutation.mutate(list);
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    const formData = new FormData(e.target);
-    saveSessionMutation.mutate({
-      title: formData.get('title'),
-      description: formData.get('description'),
-      estimated_minutes: parseInt(formData.get('estimated_minutes')) || 30,
-      content_blocks: sessionBlocks
-    });
+  const addBlock = (type: Block["type"]) => {
+    if (type === "text") setBlocks((prev) => [...prev, { type: "text", title: "", body: "" }]);
+    if (type === "video") setBlocks((prev) => [...prev, { type: "video", title: "", url: "" }]);
+    if (type === "link") setBlocks((prev) => [...prev, { type: "link", title: "", url: "", description: "" }]);
   };
 
-  if (loadingCourse) {
+  const updateBlock = (idx: number, patch: Partial<Block>) => {
+    setBlocks((prev) => prev.map((b, i) => (i === idx ? ({ ...b, ...patch } as any) : b)));
+  };
+
+  const removeBlock = (idx: number) => setBlocks((prev) => prev.filter((_, i) => i !== idx));
+
+  const isBusy = loading || courseQ.isLoading || sessionsQ.isLoading;
+
+  if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <Loader2 className="h-10 w-10 animate-spin text-violet-600" />
@@ -217,99 +215,123 @@ export default function CourseBuilder() {
     );
   }
 
-  if (!course) {
+  if (!user) {
+    navigate("/get-started", { replace: true });
+    return null;
+  }
+
+  const course = courseQ.data;
+  if (!courseId || !course) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-xl font-semibold text-slate-800 mb-2">Course not found</h2>
-          <Link to={createPageUrl("AdminCourses")}>
-            <Button>Back to Courses</Button>
-          </Link>
-        </div>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-6">
+        <GradientCard className="p-8 max-w-xl w-full">
+          <h2 className="text-xl font-bold text-slate-900 mb-2">Course not found</h2>
+          <div className="flex justify-end">
+            <Link to={createPageUrl("AdminCourses")}>
+              <Button variant="outline">Back</Button>
+            </Link>
+          </div>
+        </GradientCard>
       </div>
     );
   }
 
+  const sessions = sessionsQ.data ?? [];
+
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Header */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4 min-w-0">
               <Link to={createPageUrl("AdminCourses")}>
                 <Button variant="ghost" size="icon">
                   <ChevronLeft className="h-5 w-5" />
                 </Button>
               </Link>
-              <div>
-                <h1 className="font-semibold text-slate-800">{course.title}</h1>
-                <p className="text-sm text-slate-500">Session Builder</p>
+              <div className="min-w-0">
+                <h1 className="font-semibold text-slate-900 truncate">{course.title}</h1>
+                <p className="text-sm text-slate-500 truncate">Session Builder</p>
               </div>
             </div>
-            <Button onClick={() => openEditDialog()} className="bg-violet-600 hover:bg-violet-700 gap-2">
+
+            <Button onClick={openNew} className="bg-violet-600 hover:bg-violet-700 gap-2">
               <Plus className="h-4 w-4" />
               Add Session
             </Button>
           </div>
         </div>
       </div>
-      
-      {/* Sessions List */}
+
       <div className="max-w-5xl mx-auto px-6 py-8">
-        {loadingSessions ? (
-          <div className="flex justify-center py-20">
-            <Loader2 className="h-8 w-8 animate-spin text-violet-600" />
+        {isBusy ? (
+          <div className="flex justify-center py-16">
+            <Loader2 className="h-10 w-10 animate-spin text-violet-600" />
           </div>
-        ) : sessions.length > 0 ? (
-          <DragDropContext onDragEnd={handleDragEnd}>
-            <Droppable droppableId="sessions">
+        ) : sessions.length === 0 ? (
+          <div className="text-center py-20">
+            <div className="w-20 h-20 rounded-full bg-violet-100 flex items-center justify-center mx-auto mb-6">
+              <BookOpen className="h-10 w-10 text-violet-500" />
+            </div>
+            <h3 className="text-xl font-semibold text-slate-800 mb-2">No sessions yet</h3>
+            <p className="text-slate-500 mb-6">Add sessions to build the course structure.</p>
+            <Button onClick={openNew} className="bg-violet-600 hover:bg-violet-700 gap-2">
+              <Plus className="h-4 w-4" />
+              Add First Session
+            </Button>
+          </div>
+        ) : (
+          <DragDropContext onDragEnd={onDragEnd}>
+            <Droppable droppableId="course-sessions">
               {(provided) => (
-                <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-3">
-                  {sessions.map((session, index) => (
-                    <Draggable key={session.id} draggableId={session.id} index={index}>
-                      {(provided, snapshot) => (
-                        <div
-                          ref={provided.innerRef}
-                          {...provided.draggableProps}
-                          className={`${snapshot.isDragging ? 'shadow-lg' : ''}`}
+                <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-3">
+                  {sessions.map((s, index) => (
+                    <Draggable key={s.id} draggableId={s.id} index={index}>
+                      {(p, snapshot) => (
+                        <motion.div
+                          ref={p.innerRef}
+                          {...p.draggableProps}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: index * 0.03 }}
+                          className={cx(snapshot.isDragging && "shadow-lg")}
                         >
                           <GradientCard variant="cool" className="p-5">
                             <div className="flex items-center gap-4">
-                              <div {...provided.dragHandleProps} className="cursor-grab">
+                              <div {...p.dragHandleProps} className="cursor-grab">
                                 <GripVertical className="h-5 w-5 text-slate-400" />
                               </div>
-                              <div className="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center font-semibold text-violet-600">
-                                {index + 1}
-                              </div>
+
                               <div className="flex-1 min-w-0">
-                                <h3 className="font-semibold text-slate-800">{session.title}</h3>
-                                {session.description && (
-                                  <p className="text-sm text-slate-500 line-clamp-1">{session.description}</p>
-                                )}
+                                <div className="font-semibold text-slate-900 truncate">
+                                  {index + 1}. {s.title}
+                                </div>
+                                {s.description ? (
+                                  <div className="text-sm text-slate-600 line-clamp-1">{s.description}</div>
+                                ) : null}
+                                <div className="text-xs text-slate-500 mt-1">
+                                  {Array.isArray(s.blocks) ? s.blocks.length : 0} blocks
+                                  {s.estimated_minutes ? ` • ${s.estimated_minutes} min` : ""}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-3">
-                                <Badge variant="secondary">
-                                  {session.content_blocks?.length || 0} blocks
-                                </Badge>
-                                <Badge variant="outline">
-                                  {session.estimated_minutes || 30} min
-                                </Badge>
-                                <Button variant="ghost" size="icon" onClick={() => openEditDialog(session)}>
+
+                              <div className="flex items-center gap-2">
+                                <Button variant="ghost" size="icon" onClick={() => openEdit(s)}>
                                   <Edit2 className="h-4 w-4" />
                                 </Button>
-                                <Button 
-                                  variant="ghost" 
-                                  size="icon" 
-                                  onClick={() => deleteSessionMutation.mutate(session.id)}
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
                                   className="text-red-500 hover:text-red-600"
+                                  onClick={() => deleteSessionMutation.mutate(s.id)}
+                                  disabled={deleteSessionMutation.isPending}
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
                               </div>
                             </div>
                           </GradientCard>
-                        </div>
+                        </motion.div>
                       )}
                     </Draggable>
                   ))}
@@ -318,97 +340,143 @@ export default function CourseBuilder() {
               )}
             </Droppable>
           </DragDropContext>
-        ) : (
-          <div className="text-center py-20">
-            <div className="w-20 h-20 rounded-full bg-violet-100 flex items-center justify-center mx-auto mb-6">
-              <FileText className="h-10 w-10 text-violet-400" />
-            </div>
-            <h3 className="text-xl font-semibold text-slate-800 mb-2">No sessions yet</h3>
-            <p className="text-slate-500 mb-6">Start building your course by adding the first session</p>
-            <Button onClick={() => openEditDialog()} className="bg-violet-600 hover:bg-violet-700 gap-2">
-              <Plus className="h-4 w-4" />
-              Add First Session
-            </Button>
-          </div>
         )}
+
+        {(sessionsQ.isError || courseQ.isError) ? (
+          <div className="mt-8 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+            {(sessionsQ.error as any)?.message || (courseQ.error as any)?.message || "Failed to load course builder."}
+          </div>
+        ) : null}
       </div>
-      
-      {/* Session Editor Dialog */}
+
+      {/* Session editor */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editSession ? 'Edit Session' : 'Add New Session'}</DialogTitle>
+            <DialogTitle>{editSession ? "Edit Session" : "Add Session"}</DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-6">
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const form = new FormData(e.currentTarget);
+              const title = (form.get("title")?.toString() ?? "").trim();
+              if (!title) return;
+
+              const description = (form.get("description")?.toString() ?? "").trim() || null;
+              const estimated_minutes = Number.parseInt((form.get("estimated_minutes")?.toString() ?? "0").trim(), 10) || null;
+
+              saveSessionMutation.mutate({
+                id: editSession?.id,
+                course_id: courseId,
+                title,
+                description,
+                order_index: editSession?.order_index ?? 0,
+                estimated_minutes,
+                blocks,
+              });
+            }}
+            className="space-y-6"
+          >
             <div className="grid grid-cols-2 gap-4">
-              <div className="col-span-2">
+              <div>
                 <Label>Session Title</Label>
-                <Input name="title" defaultValue={editSession?.title} required placeholder="e.g., Understanding Grace" />
-              </div>
-              <div className="col-span-2">
-                <Label>Description (optional)</Label>
-                <Textarea name="description" defaultValue={editSession?.description} placeholder="Brief overview of this session" />
+                <Input name="title" defaultValue={editSession?.title ?? ""} required placeholder="e.g., Week 1 — The Gospel" className="mt-1" />
               </div>
               <div>
                 <Label>Estimated Minutes</Label>
-                <Input name="estimated_minutes" type="number" defaultValue={editSession?.estimated_minutes || 30} min={5} />
+                <Input name="estimated_minutes" type="number" min={0} defaultValue={editSession?.estimated_minutes ?? ""} placeholder="e.g., 30" className="mt-1" />
               </div>
             </div>
-            
-            {/* Content Blocks */}
+
             <div>
-              <Label className="mb-3 block">Content Blocks</Label>
-              <div className="flex flex-wrap gap-2 mb-4">
-                {BLOCK_TYPES.map(bt => (
-                  <Button
-                    key={bt.type}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => addBlock(bt.type)}
-                    className="gap-2"
-                  >
-                    <bt.icon className="h-4 w-4" />
-                    {bt.label}
-                  </Button>
+              <Label>Description (optional)</Label>
+              <Textarea name="description" defaultValue={editSession?.description ?? ""} className="mt-1 min-h-[90px]" placeholder="What is this session about?" />
+            </div>
+
+            {/* Blocks */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <Label>Content Blocks</Label>
+                <div className="flex gap-2">
+                  {BLOCK_TYPES.map((t) => {
+                    const Icon = t.icon;
+                    return (
+                      <Button key={t.type} type="button" variant="outline" size="sm" onClick={() => addBlock(t.type)}>
+                        <Icon className="h-4 w-4 mr-2" />
+                        Add {t.label}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {blocks.map((b, idx) => (
+                  <GradientCard key={idx} variant="warm" className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-sm font-semibold text-slate-800 capitalize">{b.type} block</div>
+                      <Button type="button" variant="ghost" size="sm" className="text-red-600" onClick={() => removeBlock(idx)}>
+                        Remove
+                      </Button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <Input
+                        value={(b as any).title ?? ""}
+                        onChange={(e) => updateBlock(idx, { title: e.target.value } as any)}
+                        placeholder="Block title (optional)"
+                      />
+
+                      {b.type === "video" || b.type === "link" ? (
+                        <Input
+                          value={(b as any).url ?? ""}
+                          onChange={(e) => updateBlock(idx, { url: e.target.value } as any)}
+                          placeholder="https://..."
+                        />
+                      ) : (
+                        <div />
+                      )}
+                    </div>
+
+                    {b.type === "text" ? (
+                      <Textarea
+                        value={(b as any).body ?? ""}
+                        onChange={(e) => updateBlock(idx, { body: e.target.value } as any)}
+                        placeholder="Write the teaching / notes / instructions…"
+                        className="min-h-[110px]"
+                      />
+                    ) : b.type === "video" ? (
+                      <div className="text-xs text-slate-600">
+                        Store a YouTube/Vimeo URL (or direct video URL). It will embed on the participant page.
+                      </div>
+                    ) : (
+                      <Input
+                        value={(b as any).description ?? ""}
+                        onChange={(e) => updateBlock(idx, { description: e.target.value } as any)}
+                        placeholder="Brief description (optional)"
+                      />
+                    )}
+                  </GradientCard>
                 ))}
               </div>
-              
-              <div className="space-y-4">
-                <AnimatePresence>
-                  {sessionBlocks.map((block, index) => (
-                    <motion.div
-                      key={block.id}
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                    >
-                      <ContentBlockEditor
-                        block={block}
-                        onChange={(b) => updateBlock(index, b)}
-                        onRemove={() => removeBlock(index)}
-                      />
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-                {sessionBlocks.length === 0 && (
-                  <div className="text-center py-8 border-2 border-dashed border-slate-200 rounded-xl text-slate-500">
-                    Add content blocks using the buttons above
-                  </div>
-                )}
-              </div>
             </div>
-            
-            <div className="flex justify-end gap-3 pt-4 border-t">
+
+            <div className="flex justify-end gap-3 pt-2 border-t">
               <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={saveSessionMutation.isPending} className="bg-violet-600 hover:bg-violet-700 gap-2">
-                {saveSessionMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                <Save className="h-4 w-4" />
+                {saveSessionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 Save Session
               </Button>
             </div>
+
+            {saveSessionMutation.isError ? (
+              <div className="text-sm text-red-600">
+                {(saveSessionMutation.error as any)?.message ?? "Failed to save session."}
+              </div>
+            ) : null}
           </form>
         </DialogContent>
       </Dialog>

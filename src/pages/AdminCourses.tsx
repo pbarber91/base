@@ -1,206 +1,260 @@
-import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
-import { supabase } from '@/lib/supabaseClient';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+// src/pages/AdminCourses.tsx
+import React, { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import {
-  Plus, Edit2, Trash2, Eye, EyeOff, GraduationCap,
-  MoreVertical, Loader2, Users, Calendar, Settings, Upload, Image as ImageIcon
-} from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import GradientCard from "@/components/ui/GradientCard";
 import EmptyState from "@/components/shared/EmptyState";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { createPageUrl } from "@/utils";
+import {
+  Plus,
+  Edit2,
+  Trash2,
+  Eye,
+  EyeOff,
+  MoreVertical,
+  Loader2,
+  Settings,
+  BookOpen,
+  Globe,
+  Lock,
+  Users,
+} from "lucide-react";
 import { motion } from "framer-motion";
 
+type ChurchMemberRow = {
+  church_id: string;
+  user_id: string;
+  role: string;
+};
+
+type ChurchRow = {
+  id: string;
+  name: string;
+};
+
+type CourseRow = {
+  id: string;
+  church_id: string | null;
+  title: string;
+  description: string | null;
+  tags: string[];
+  cover_image_url: string | null;
+  is_published: boolean;
+  is_public: boolean; // NEW COLUMN
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type CourseFormPayload = {
+  church_id: string | null;
+  title: string;
+  description: string | null;
+  tags: string[];
+  cover_image_url: string | null;
+  is_public: boolean;
+  is_published: boolean;
+};
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
+}
+
+function parseTags(raw: string) {
+  const v = (raw || "").trim();
+  if (!v) return [];
+  return v
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
 export default function AdminCourses() {
-  const [user, setUser] = useState<any>(null);
-  const [editCourse, setEditCourse] = useState<any>(null);
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-
-  // Cover image (URL stored in DB)
-  const [coverImageUrl, setCoverImageUrl] = useState<string>('');
-  const [isUploadingCover, setIsUploadingCover] = useState(false);
-  const [uploadError, setUploadError] = useState<string>('');
-
+  const { user, supabase, loading } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
+  const [editCourse, setEditCourse] = useState<CourseRow | null>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+
+  // Controls
+  const [selectedChurchId, setSelectedChurchId] = useState<string>("");
+  const [visibility, setVisibility] = useState<"public" | "church">("church"); // maps to is_public
+  const [publishState, setPublishState] = useState<"draft" | "published">("draft"); // maps to is_published
+
+  const canUse = !!user?.id && !loading;
+
+  // Which churches can I administer (admin or leader)?
+  const myChurchMembershipsQ = useQuery({
+    queryKey: ["my-church-memberships-for-courses", user?.id],
+    enabled: canUse,
+    queryFn: async (): Promise<ChurchMemberRow[]> => {
+      const { data, error } = await supabase
+        .from("church_members")
+        .select("church_id,user_id,role")
+        .eq("user_id", user!.id);
+
+      if (error) throw error;
+      return (data ?? []) as ChurchMemberRow[];
+    },
+    staleTime: 30_000,
+  });
+
+  const myAdminChurchIds = useMemo(() => {
+    const rows = myChurchMembershipsQ.data ?? [];
+    return rows
+      .filter((r) => {
+        const role = (r.role || "").toLowerCase();
+        return role === "admin" || role === "leader";
+      })
+      .map((r) => r.church_id)
+      .filter(Boolean);
+  }, [myChurchMembershipsQ.data]);
+
+  const churchesQ = useQuery({
+    queryKey: ["churches-for-admin-courses", myAdminChurchIds],
+    enabled: canUse && myAdminChurchIds.length > 0,
+    queryFn: async (): Promise<ChurchRow[]> => {
+      const { data, error } = await supabase.from("churches").select("id,name").in("id", myAdminChurchIds).order("name");
+      if (error) throw error;
+      return (data ?? []) as ChurchRow[];
+    },
+    staleTime: 30_000,
+  });
+
+  // default church selection
   useEffect(() => {
-    base44.auth.me().then(setUser).catch(() => setUser(null));
-  }, []);
+    if (selectedChurchId) return;
+    const list = churchesQ.data ?? [];
+    if (list.length > 0) setSelectedChurchId(list[0].id);
+  }, [churchesQ.data, selectedChurchId]);
 
-  const { data: churches = [] } = useQuery({
-    queryKey: ['churches'],
-    queryFn: () => base44.entities.Church.list()
-  });
+  // Courses I can manage (courses owned by churches where I’m admin/leader)
+  const myCoursesQ = useQuery({
+    queryKey: ["admin-courses", user?.id, myAdminChurchIds],
+    enabled: canUse && myAdminChurchIds.length > 0,
+    queryFn: async (): Promise<CourseRow[]> => {
+      const { data, error } = await supabase
+        .from("courses")
+        .select("id,church_id,title,description,tags,cover_image_url,is_published,is_public,created_by,created_at,updated_at")
+        .in("church_id", myAdminChurchIds)
+        .order("updated_at", { ascending: false });
 
-  const myChurches = churches.filter((c: any) => c.admin_emails?.includes(user?.email));
-
-  const { data: myCourses = [], isLoading } = useQuery({
-    queryKey: ['my-courses', user?.email],
-    queryFn: async () => {
-      const byInstructor = await base44.entities.Course.filter({ instructor_email: user?.email }, '-created_date');
-      const byChurch: any[] = [];
-      for (const church of myChurches) {
-        const churchCourses = await base44.entities.Course.filter({ church_id: church.id }, '-created_date');
-        byChurch.push(...churchCourses);
-      }
-      const allCourses = [...byInstructor, ...byChurch];
-      const uniqueCourses = Array.from(new Map(allCourses.map((c: any) => [c.id, c])).values());
-      return uniqueCourses;
+      if (error) throw error;
+      return (data ?? []) as CourseRow[];
     },
-    enabled: !!user?.email
+    staleTime: 15_000,
   });
 
-  const saveMutation = useMutation({
-    mutationFn: async (data: any) => {
-      if (editCourse?.id) {
-        return base44.entities.Course.update(editCourse.id, data);
-      }
-      return base44.entities.Course.create({
-        ...data,
-        instructor_email: user.email,
-        instructor_name: user.full_name,
-        enrollment_count: 0,
-        sessions_count: 0
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries(['my-courses']);
-      setIsDialogOpen(false);
-      setEditCourse(null);
-      setCoverImageUrl('');
-      setUploadError('');
-    }
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => base44.entities.Course.delete(id),
-    onSuccess: () => queryClient.invalidateQueries(['my-courses'])
-  });
-
-  const togglePublishMutation = useMutation({
-    mutationFn: (course: any) => base44.entities.Course.update(course.id, { is_published: !course.is_published }),
-    onSuccess: () => queryClient.invalidateQueries(['my-courses'])
-  });
-
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.target as HTMLFormElement);
-
-    saveMutation.mutate({
-      title: formData.get('title'),
-      description: formData.get('description'),
-      church_id: formData.get('church_id'),
-      category: formData.get('category'),
-      difficulty: formData.get('difficulty'),
-      estimated_weeks: parseInt(String(formData.get('estimated_weeks') ?? ''), 10) || 4,
-      is_public: formData.get('is_public') === 'on',
-      cover_image_url: coverImageUrl?.trim() || null,
-    });
-  };
-
-  const openEditDialog = (course: any = null) => {
-    setEditCourse(course);
-    setCoverImageUrl(course?.cover_image_url || '');
-    setUploadError('');
+  const openCreate = () => {
+    setEditCourse(null);
+    setVisibility("church");
+    setPublishState("draft");
     setIsDialogOpen(true);
   };
 
-  const churchMap: Record<string, any> = {};
-  churches.forEach((c: any) => { churchMap[c.id] = c; });
-
-  const categoryLabels: Record<string, string> = {
-    foundations: "Foundations",
-    bible_study: "Bible Study",
-    theology: "Theology",
-    spiritual_growth: "Spiritual Growth",
-    leadership: "Leadership",
-    family: "Family",
-    outreach: "Outreach",
-    other: "Other"
+  const openEdit = (c: CourseRow) => {
+    setEditCourse(c);
+    setSelectedChurchId(c.church_id || selectedChurchId || "");
+    setVisibility(c.is_public ? "public" : "church");
+    setPublishState(c.is_published ? "published" : "draft");
+    setIsDialogOpen(true);
   };
 
-  const getAuthedUid = async (): Promise<string | null> => {
-    const { data, error } = await supabase.auth.getUser();
-    if (error) return null;
-    return data.user?.id ?? null;
-  };
+  const saveMutation = useMutation({
+    mutationFn: async (payload: CourseFormPayload) => {
+      if (!user) throw new Error("Not authenticated.");
 
-  const uploadCoverImage = async (file: File) => {
-    setUploadError('');
-    setIsUploadingCover(true);
-    try {
-      const uid = await getAuthedUid();
-      if (!uid) {
-        throw new Error("You must be signed in to upload images.");
+      if (editCourse?.id) {
+        const { error } = await supabase.from("courses").update(payload).eq("id", editCourse.id);
+        if (error) throw error;
+        return { id: editCourse.id };
       }
 
-      const ext = (file.name.split('.').pop() || 'png').toLowerCase();
-      const safeExt = ext.replace(/[^a-z0-9]/g, '') || 'png';
-      const id = (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);
-      const path = `public/courses/covers/${uid}/${id}.${safeExt}`;
+      const insertPayload: CourseFormPayload & { created_by: string } = {
+        ...payload,
+        created_by: user.id,
+      };
 
-      const { error: upErr } = await supabase
-        .storage
-        .from('public-media')
-        .upload(path, file, {
-          cacheControl: '3600',
-          upsert: true,
-          contentType: file.type || undefined,
-        });
+      const { data, error } = await supabase.from("courses").insert(insertPayload).select("id").single();
+      if (error) throw error;
+      return data as any;
+    },
+    onSuccess: async (row) => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-courses"] });
+      setIsDialogOpen(false);
+      setEditCourse(null);
 
-      if (upErr) throw upErr;
+      // After creating, send to builder
+      if (row?.id) {
+        navigate(createPageUrl("CourseBuilder") + `?id=${encodeURIComponent(row.id)}`);
+      }
+    },
+  });
 
-      const { data } = supabase.storage.from('public-media').getPublicUrl(path);
-      const publicUrl = data?.publicUrl;
-      if (!publicUrl) throw new Error("Upload succeeded but could not generate a public URL.");
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("courses").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-courses"] });
+    },
+  });
 
-      setCoverImageUrl(publicUrl);
-    } catch (err: any) {
-      setUploadError(err?.message ?? 'Upload failed');
-    } finally {
-      setIsUploadingCover(false);
-    }
-  };
+  const togglePublishMutation = useMutation({
+    mutationFn: async (course: CourseRow) => {
+      const { error } = await supabase
+        .from("courses")
+        .update({ is_published: !course.is_published })
+        .eq("id", course.id);
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-courses"] });
+    },
+  });
 
-  const onPickCoverFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    // reset input so selecting the same file again triggers change
-    e.target.value = '';
-    if (!file) return;
+  const isBusy = loading || myChurchMembershipsQ.isLoading || churchesQ.isLoading || myCoursesQ.isLoading;
 
-    // Basic guard: only images
-    if (!file.type.startsWith('image/')) {
-      setUploadError('Please select an image file.');
-      return;
-    }
+  // Guard: must be signed in and be a church admin/leader somewhere
+  if (!loading && !user) {
+    navigate("/get-started", { replace: true });
+    return null;
+  }
 
-    await uploadCoverImage(file);
-  };
+  const hasAdminAccess = myAdminChurchIds.length > 0;
 
-  if (!user) {
+  if (!loading && user && !hasAdminAccess) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-xl font-semibold text-slate-800 mb-2">Sign in required</h2>
-          <Button onClick={() => base44.auth.redirectToLogin()}>Sign In</Button>
-        </div>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-6">
+        <GradientCard className="p-8 max-w-xl w-full">
+          <h2 className="text-xl font-bold text-slate-900 mb-2">No admin access</h2>
+          <p className="text-sm text-slate-600 mb-6">
+            You don’t currently have a Church Admin or Leader role in any church. Ask a church admin to promote you.
+          </p>
+          <div className="flex justify-end">
+            <Link to={createPageUrl("Courses")}>
+              <Button variant="outline">Back to Courses</Button>
+            </Link>
+          </div>
+        </GradientCard>
       </div>
     );
   }
 
+  const courses = myCoursesQ.data ?? [];
+
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Header */}
       <div className="bg-gradient-to-br from-violet-600 via-violet-500 to-purple-500 text-white">
         <div className="max-w-6xl mx-auto px-6 py-12">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
@@ -211,14 +265,13 @@ export default function AdminCourses() {
                 </div>
                 <span className="text-violet-100 font-medium">Course Management</span>
               </div>
-              <h1 className="text-3xl font-serif font-bold mb-2">My Courses</h1>
-              <p className="text-violet-100">Create and manage courses for your church community</p>
+              <h1 className="text-3xl font-serif font-bold mb-2">Admin Courses</h1>
+              <p className="text-violet-100">
+                Publish controls “ready to take.” Visibility controls “who can see it” (Public vs Church-only).
+              </p>
             </div>
-            <Button
-              onClick={() => openEditDialog()}
-              size="lg"
-              className="bg-white text-violet-700 hover:bg-violet-50 gap-2"
-            >
+
+            <Button onClick={openCreate} size="lg" className="bg-white text-violet-700 hover:bg-violet-50 gap-2">
               <Plus className="h-5 w-5" />
               Create Course
             </Button>
@@ -226,35 +279,42 @@ export default function AdminCourses() {
         </div>
       </div>
 
-      {/* Content */}
       <div className="max-w-6xl mx-auto px-6 py-10">
-        {isLoading ? (
+        {isBusy ? (
           <div className="flex justify-center py-20">
             <Loader2 className="h-10 w-10 animate-spin text-violet-600" />
           </div>
-        ) : myCourses.length > 0 ? (
+        ) : courses.length === 0 ? (
+          <EmptyState
+            icon={BookOpen}
+            title="No courses yet"
+            description="Create your first course, then add sessions in the builder."
+            action={openCreate}
+            actionLabel="Create Course"
+          />
+        ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {myCourses.map((course: any, i: number) => (
+            {courses.map((course: CourseRow, i: number) => (
               <motion.div
                 key={course.id}
-                initial={{ opacity: 0, y: 20 }}
+                initial={{ opacity: 0, y: 18 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
+                transition={{ delay: i * 0.04 }}
               >
                 <GradientCard variant="cool" className="overflow-hidden">
-                  {course.cover_image_url && (
+                  {course.cover_image_url ? (
                     <div className="h-32 overflow-hidden">
                       <img src={course.cover_image_url} alt="" className="w-full h-full object-cover" />
                     </div>
-                  )}
+                  ) : null}
+
                   <div className="p-5">
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <h3 className="font-semibold text-slate-800 line-clamp-1">{course.title}</h3>
-                        <p className="text-sm text-slate-500 line-clamp-1">
-                          {churchMap[course.church_id]?.name || 'No church'}
-                        </p>
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900 truncate">{course.title}</div>
+                        <div className="text-sm text-slate-600 line-clamp-2">{course.description || ""}</div>
                       </div>
+
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" className="h-8 w-8">
@@ -262,24 +322,28 @@ export default function AdminCourses() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => openEditDialog(course)}>
+                          <DropdownMenuItem onClick={() => openEdit(course)}>
                             <Edit2 className="h-4 w-4 mr-2" />
                             Edit Details
                           </DropdownMenuItem>
+
                           <DropdownMenuItem asChild>
-                            <Link to={createPageUrl("CourseBuilder") + `?id=${course.id}`}>
+                            <Link to={createPageUrl("CourseBuilder") + `?id=${encodeURIComponent(course.id)}`}>
                               <Settings className="h-4 w-4 mr-2" />
                               Edit Sessions
                             </Link>
                           </DropdownMenuItem>
+
                           <DropdownMenuItem onClick={() => togglePublishMutation.mutate(course)}>
-                            {course.is_published ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
-                            {course.is_published ? 'Unpublish' : 'Publish'}
+                            {course.is_published ? (
+                              <EyeOff className="h-4 w-4 mr-2" />
+                            ) : (
+                              <Eye className="h-4 w-4 mr-2" />
+                            )}
+                            {course.is_published ? "Unpublish" : "Publish"}
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => deleteMutation.mutate(course.id)}
-                            className="text-red-600"
-                          >
+
+                          <DropdownMenuItem onClick={() => deleteMutation.mutate(course.id)} className="text-red-600">
                             <Trash2 className="h-4 w-4 mr-2" />
                             Delete
                           </DropdownMenuItem>
@@ -289,227 +353,182 @@ export default function AdminCourses() {
 
                     <div className="flex flex-wrap gap-2 mb-4">
                       <Badge variant={course.is_published ? "default" : "secondary"}>
-                        {course.is_published ? 'Published' : 'Draft'}
+                        {course.is_published ? "Published" : "Draft"}
                       </Badge>
-                      <Badge variant="outline">{categoryLabels[course.category] || course.category}</Badge>
+
+                      <Badge
+                        variant="outline"
+                        className={cx(
+                          "gap-1",
+                          course.is_public ? "border-emerald-200 text-emerald-700" : "border-slate-200 text-slate-700"
+                        )}
+                      >
+                        {course.is_public ? <Globe className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                        {course.is_public ? "Public" : "Church-only"}
+                      </Badge>
                     </div>
 
-                    <div className="flex items-center gap-4 text-sm text-slate-500">
-                      <span className="flex items-center gap-1">
-                        <Calendar className="h-4 w-4" />
-                        {course.sessions_count || 0} sessions
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Users className="h-4 w-4" />
-                        {course.enrollment_count || 0} enrolled
-                      </span>
-                    </div>
+                    {course.tags?.length ? (
+                      <div className="flex flex-wrap gap-2">
+                        {course.tags.slice(0, 4).map((t) => (
+                          <span
+                            key={t}
+                            className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                        {course.tags.length > 4 ? (
+                          <span className="text-xs text-slate-500">+{course.tags.length - 4}</span>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     <div className="mt-4 pt-4 border-t border-slate-100">
-                      <Link to={createPageUrl("CourseBuilder") + `?id=${course.id}`}>
-                        <Button variant="outline" size="sm" className="w-full">
-                          Manage Sessions
-                        </Button>
-                      </Link>
+                      <div className="flex gap-2">
+                        <Link className="flex-1" to={createPageUrl("CourseBuilder") + `?id=${encodeURIComponent(course.id)}`}>
+                          <Button variant="outline" size="sm" className="w-full">
+                            Edit Sessions
+                          </Button>
+                        </Link>
+                        <Link className="flex-1" to={createPageUrl("CourseDetail") + `?id=${encodeURIComponent(course.id)}`}>
+                          <Button variant="outline" size="sm" className="w-full">
+                            View
+                          </Button>
+                        </Link>
+                      </div>
                     </div>
                   </div>
                 </GradientCard>
               </motion.div>
             ))}
           </div>
-        ) : (
-          <EmptyState
-            icon={GraduationCap}
-            title="No courses yet"
-            description="Create your first course to start discipling your community."
-            action={() => openEditDialog()}
-            actionLabel="Create Course"
-          />
         )}
+
+        {(myCoursesQ.isError || churchesQ.isError || myChurchMembershipsQ.isError) ? (
+          <div className="mt-8 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+            {(myCoursesQ.error as any)?.message ||
+              (churchesQ.error as any)?.message ||
+              (myChurchMembershipsQ.error as any)?.message ||
+              "Failed to load admin courses."}
+          </div>
+        ) : null}
       </div>
 
-      {/* Create/Edit Dialog */}
+      {/* Create/Edit dialog */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="max-w-lg bg-white text-slate-900">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="text-slate-900">{editCourse ? 'Edit Course' : 'Create New Course'}</DialogTitle>
+            <DialogTitle>{editCourse ? "Edit Course" : "Create Course"}</DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const form = new FormData(e.currentTarget);
+
+              const title = (form.get("title")?.toString() ?? "").trim();
+              if (!title) return;
+
+              const description = (form.get("description")?.toString() ?? "").trim() || null;
+              const cover = (form.get("cover_image_url")?.toString() ?? "").trim() || null;
+              const tags = parseTags(form.get("tags")?.toString() ?? "");
+
+              const payload: CourseFormPayload = {
+                church_id: selectedChurchId ? selectedChurchId : null,
+                title,
+                description,
+                tags,
+                cover_image_url: cover,
+                is_public: visibility === "public",
+                is_published: publishState === "published",
+              };
+
+              saveMutation.mutate(payload);
+            }}
+            className="space-y-4"
+          >
             <div>
-              <Label className="text-slate-800">Course Title</Label>
-              <Input
-                name="title"
-                defaultValue={editCourse?.title}
-                required
-                placeholder="e.g., Foundations of Faith"
-                className="bg-white text-slate-900 placeholder:text-slate-400"
-              />
+              <Label>Church</Label>
+              <select
+                value={selectedChurchId}
+                onChange={(e) => setSelectedChurchId(e.target.value)}
+                className="mt-1 w-full h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+              >
+                {(churchesQ.data ?? []).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500 mt-1">Courses are owned by a church (admins/leaders manage them).</p>
             </div>
 
             <div>
-              <Label className="text-slate-800">Description</Label>
-              <Textarea
-                name="description"
-                defaultValue={editCourse?.description}
-                placeholder="What will participants learn?"
-                className="bg-white text-slate-900 placeholder:text-slate-400"
-              />
+              <Label>Title</Label>
+              <Input name="title" defaultValue={editCourse?.title ?? ""} required placeholder="e.g., Foundations of Faith" className="mt-1" />
+            </div>
+
+            <div>
+              <Label>Description</Label>
+              <Textarea name="description" defaultValue={editCourse?.description ?? ""} placeholder="What will people learn?" className="mt-1 min-h-[90px]" />
+            </div>
+
+            <div>
+              <Label>Tags (comma separated)</Label>
+              <Input name="tags" defaultValue={(editCourse?.tags ?? []).join(", ")} placeholder="discipleship, prayer, bible" className="mt-1" />
+            </div>
+
+            <div>
+              <Label>Cover Image URL (optional)</Label>
+              <Input name="cover_image_url" defaultValue={editCourse?.cover_image_url ?? ""} placeholder="https://..." className="mt-1" />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label className="text-slate-800">Church</Label>
-                <Select name="church_id" defaultValue={editCourse?.church_id || myChurches[0]?.id}>
-                  <SelectTrigger className="bg-white text-slate-900">
-                    <SelectValue placeholder="Select church" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {myChurches.map((c: any) => (
-                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label>Visibility</Label>
+                <select
+                  value={visibility}
+                  onChange={(e) => setVisibility(e.target.value as any)}
+                  className="mt-1 w-full h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                >
+                  <option value="church">Church-only</option>
+                  <option value="public">Public</option>
+                </select>
+                <p className="text-xs text-slate-500 mt-1">
+                  Public = anyone can view (if published). Church-only = only members of this church can view (if published).
+                </p>
               </div>
 
               <div>
-                <Label className="text-slate-800">Category</Label>
-                <Select name="category" defaultValue={editCourse?.category || 'bible_study'}>
-                  <SelectTrigger className="bg-white text-slate-900">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(categoryLabels).map(([k, v]) => (
-                      <SelectItem key={k} value={k}>{v}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label>Publish State</Label>
+                <select
+                  value={publishState}
+                  onChange={(e) => setPublishState(e.target.value as any)}
+                  className="mt-1 w-full h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                >
+                  <option value="draft">Draft</option>
+                  <option value="published">Published</option>
+                </select>
+                <p className="text-xs text-slate-500 mt-1">Draft won’t show on the Courses page (even if visibility is Public).</p>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label className="text-slate-800">Difficulty</Label>
-                <Select name="difficulty" defaultValue={editCourse?.difficulty || 'beginner'}>
-                  <SelectTrigger className="bg-white text-slate-900">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="beginner">Beginner</SelectItem>
-                    <SelectItem value="intermediate">Intermediate</SelectItem>
-                    <SelectItem value="advanced">Advanced</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <Label className="text-slate-800">Estimated Weeks</Label>
-                <Input
-                  name="estimated_weeks"
-                  type="number"
-                  defaultValue={editCourse?.estimated_weeks || 4}
-                  min={1}
-                  className="bg-white text-slate-900 placeholder:text-slate-400"
-                />
-              </div>
-            </div>
-
-            {/* Cover Image Upload + URL */}
-            <div className="space-y-2">
-              <Label className="text-slate-800">Cover Image (optional)</Label>
-
-              {coverImageUrl ? (
-                <div className="rounded-xl border border-slate-200 overflow-hidden bg-slate-50">
-                  <div className="h-32 w-full overflow-hidden">
-                    <img src={coverImageUrl} alt="Cover preview" className="h-full w-full object-cover" />
-                  </div>
-                  <div className="p-3 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-xs text-slate-500 truncate">{coverImageUrl}</p>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCoverImageUrl('')}
-                      className="shrink-0"
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-300 p-4 bg-slate-50">
-                  <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-lg bg-white border border-slate-200 flex items-center justify-center">
-                      <ImageIcon className="h-5 w-5 text-slate-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-slate-800">Upload a cover image</p>
-                      <p className="text-xs text-slate-500">PNG/JPG recommended (public)</p>
-                    </div>
-                    <div className="shrink-0">
-                      <label className="inline-flex">
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={onPickCoverFile}
-                          className="hidden"
-                        />
-                        <span
-                          className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium cursor-pointer border ${
-                            isUploadingCover
-                              ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                              : 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50'
-                          }`}
-                        >
-                          {isUploadingCover ? (
-                            <>
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              Uploading…
-                            </>
-                          ) : (
-                            <>
-                              <Upload className="h-4 w-4" />
-                              Upload
-                            </>
-                          )}
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  {uploadError && (
-                    <p className="mt-2 text-sm text-red-600">{uploadError}</p>
-                  )}
-                </div>
-              )}
-
-              <div>
-                <Label className="text-slate-700 text-xs">Or paste an image URL</Label>
-                <Input
-                  value={coverImageUrl}
-                  onChange={(e) => setCoverImageUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="bg-white text-slate-900 placeholder:text-slate-400"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Switch name="is_public" defaultChecked={editCourse?.is_public} />
-              <Label className="text-slate-800">Make this course public (visible to all users)</Label>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-4 border-t border-slate-200">
+            <div className="flex justify-end gap-3 pt-4">
               <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={saveMutation.isPending} className="bg-violet-600 hover:bg-violet-700 gap-2">
-                {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                {editCourse ? 'Save Changes' : 'Create Course'}
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {editCourse ? "Save" : "Create"}
               </Button>
             </div>
+
+            {saveMutation.isError ? (
+              <div className="text-sm text-red-600">
+                {(saveMutation.error as any)?.message ?? "Failed to save course."}
+              </div>
+            ) : null}
           </form>
         </DialogContent>
       </Dialog>
